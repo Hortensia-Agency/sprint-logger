@@ -1,0 +1,20 @@
+{
+  "name": "@sprint-logger/root",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Sprint Logger client SDKs — public, published to npm under @sprint-logger/*. This is an independent repo, embedded in the Sprint monorepo as a git submodule.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "verify": "pnpm -r verify",
+    "clean": "pnpm -r exec rm -rf dist"
+  },
+  "devDependencies": {
+    "publint": "^0.2.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.0"
+  }
+}

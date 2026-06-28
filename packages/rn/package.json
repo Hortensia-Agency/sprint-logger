@@ -1,0 +1,66 @@
+{
+  "name": "@sprint-logger/rn",
+  "version": "0.1.0",
+  "description": "Sprint Signals error logger for React Native / Expo. init() once, captures native JS crashes with iOS/Android device context. Pseudonymous, PII-safe.",
+  "keywords": [
+    "error-tracking",
+    "error-logging",
+    "sprint",
+    "signals",
+    "react-native",
+    "expo"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hortensia-Agency/sprint-logger.git",
+    "directory": "packages/rn"
+  },
+  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/rn#readme",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "verify": "tsup && publint --strict"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "react-native": ">=0.73"
+  },
+  "peerDependenciesMeta": {
+    "expo-device": {
+      "optional": true
+    },
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "publint": "^0.2.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.0"
+  }
+}

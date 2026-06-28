@@ -1,0 +1,55 @@
+{
+  "name": "@sprint-logger/web",
+  "version": "0.1.0",
+  "description": "Sprint Signals error logger for browser apps (Next.js, Vite, CRA, Astro). Import { init, capture } and call init(key) once — no script tag. Pseudonymous, PII-safe.",
+  "keywords": [
+    "error-tracking",
+    "error-logging",
+    "sprint",
+    "signals",
+    "browser",
+    "observability"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hortensia-Agency/sprint-logger.git",
+    "directory": "packages/web"
+  },
+  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/web#readme",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "verify": "tsup && publint --strict"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "publint": "^0.2.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.0"
+  }
+}

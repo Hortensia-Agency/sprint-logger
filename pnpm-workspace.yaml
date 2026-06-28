@@ -1,0 +1,9 @@
+packages:
+  - "packages/*"
+
+allowBuilds:
+  esbuild: false
+
+# esbuild needs its postinstall to fetch its native binary (tsup depends on it).
+onlyBuiltDependencies:
+  - esbuild

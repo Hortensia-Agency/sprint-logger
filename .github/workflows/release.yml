@@ -1,0 +1,57 @@
+name: Release
+
+# Publishes @sprint-logger/* to npm with provenance via OIDC trusted publishing.
+# NO npm token is stored anywhere — npm verifies the GitHub OIDC identity against
+# the trusted publisher you configure on npmjs.com for each package. Fires only on
+# a version tag, after the build + publint gate passes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # REQUIRED for OIDC provenance — do not remove
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: pnpm
+
+      # Trusted publishing needs a recent npm (OIDC support landed in 11.5.1).
+      - name: Pin npm with OIDC support
+        run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build + publint gate
+        run: pnpm verify
+
+      # Publish each package. --provenance attaches the signed build attestation;
+      # OIDC supplies the auth, so no NODE_AUTH_TOKEN / NPM_TOKEN is set.
+      - name: Publish @sprint-logger/web
+        run: npm publish --provenance --access public
+        working-directory: packages/web
+
+      - name: Publish @sprint-logger/node
+        run: npm publish --provenance --access public
+        working-directory: packages/node
+
+      - name: Publish @sprint-logger/rn
+        run: npm publish --provenance --access public
+        working-directory: packages/rn
