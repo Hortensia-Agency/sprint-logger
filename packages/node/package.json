@@ -47,8 +47,7 @@
     "verify": "tsup && publint --strict"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

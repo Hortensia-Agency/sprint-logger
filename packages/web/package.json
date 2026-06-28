@@ -44,8 +44,7 @@
     "verify": "tsup && publint --strict"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "devDependencies": {
     "publint": "^0.2.12",
