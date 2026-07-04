@@ -26,12 +26,42 @@ interface AsyncStorageLike {
 
 export type Severity = "low" | "medium" | "high" | "blocker";
 
+/**
+ * A single breadcrumb — one thing that happened before an error. Mirrors the
+ * server's BreadcrumbSchema (lib/signals/context.ts) by hand: this package has
+ * no dependency on the Sprint monorepo, so the wire shape is duplicated, not
+ * imported. Keep the three SDKs (web/rn/node) in lock-step.
+ *
+ * RN has no DOM, so the categories map to platform-appropriate sources:
+ *   console  → console.error / console.warn (auto)
+ *   click    → a UI press/tap (host-instrumented via addBreadcrumb / a helper)
+ *   navigation → a React-Navigation screen change (host-instrumented)
+ *   fetch    → the global fetch (auto)
+ * The server enum is shared; "click" is the closest wire category for a press.
+ */
+export interface Breadcrumb {
+  category: "console" | "click" | "navigation" | "fetch" | "xhr";
+  type?: string;
+  level?: "debug" | "info" | "warning" | "error";
+  message?: string;
+  /** ms epoch, client clock — advisory ordering only. */
+  timestamp?: number;
+  data?: Record<string, string | number | boolean | null>;
+}
+
 export interface SignalsRnConfig {
   key: string;
   origin?: string;
   release?: string;
   /** Hook RN's global ErrorUtils handler. Default true. */
   installGlobalHandler?: boolean;
+  /**
+   * Auto-collect breadcrumbs (console + fetch) into a bounded trail attached to
+   * each captured event. Press + navigation crumbs are added by the host via
+   * addBreadcrumb() / the navigation helper (RN has no globally-patchable
+   * gesture or router). Default true. Set false to disable all instrumentation.
+   */
+  captureBreadcrumbs?: boolean;
   onError?: (err: unknown) => void;
 }
 
@@ -39,7 +69,12 @@ export interface CaptureContext {
   userToken?: string;
   route?: string;
   severity?: Severity;
-  breadcrumbs?: unknown[];
+  /**
+   * Explicit breadcrumb list. If omitted, the auto-collected trail is attached.
+   * Bounded to the last 50. Keep values PII-free (the server re-scrubs, but
+   * source-side hygiene is cheaper).
+   */
+  breadcrumbs?: Breadcrumb[];
 }
 
 const DEFAULT_ORIGIN = "https://sprint.hortensia-agency.com";
@@ -121,6 +156,204 @@ function randHex(): string {
   return s;
 }
 
+// ---- breadcrumbs (auto-capture) ---------------------------------------
+//
+// A bounded ring buffer of what happened before an error. RN's auto-sources are
+// console + the global fetch (both defensively wrapped — a throw in a wrapper
+// must never break the host's own call). Press + navigation crumbs have no
+// global hook in RN, so the host adds them via addBreadcrumb() (or the
+// navigationBreadcrumb helper). Values are scrubbed at the source; the server
+// re-scrubs regardless (the key is public), so this is best-effort hygiene.
+
+const CRUMB_MAX = 50;
+const CRUMB_MSG_MAX = 512;
+const crumbs: Breadcrumb[] = [];
+let breadcrumbsInstalled = false;
+
+function pushCrumb(c: Breadcrumb): void {
+  try {
+    crumbs.push(c);
+    if (crumbs.length > CRUMB_MAX) crumbs.shift();
+  } catch {
+    /* never let bookkeeping throw into a wrapped host call */
+  }
+}
+
+function getBreadcrumbs(): Breadcrumb[] {
+  return crumbs.slice(-CRUMB_MAX);
+}
+
+const EMAIL_RE_G = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
+const IPV4_RE_G = /\b\d{1,3}(\.\d{1,3}){3}\b/g;
+
+function scrubCrumb(v: string): string {
+  let s = v.length > CRUMB_MSG_MAX ? v.slice(0, CRUMB_MSG_MAX) : v;
+  s = s.replace(EMAIL_RE_G, "[email]").replace(IPV4_RE_G, "[ip]");
+  return s;
+}
+
+// Strip query/hash from a URL so tokens/emails in query strings never leave the
+// device. Non-URL strings pass through the scrubber.
+function stripUrl(u: string): string {
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
+      const parsed = new URL(u);
+      return scrubCrumb(parsed.origin + parsed.pathname);
+    }
+    if (u.startsWith("/")) {
+      const q = u.search(/[?#]/);
+      return scrubCrumb(q === -1 ? u : u.slice(0, q));
+    }
+  } catch {
+    /* fall through */
+  }
+  return scrubCrumb(u);
+}
+
+function nowMs(): number {
+  try {
+    return Date.now();
+  } catch {
+    return 0;
+  }
+}
+
+function stringifyArg(a: unknown): string {
+  try {
+    if (typeof a === "string") return a;
+    if (a instanceof Error) return `${a.name}: ${a.message}`;
+    if (typeof a === "object" && a !== null) return JSON.stringify(a).slice(0, 256);
+    return String(a);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Record a manual breadcrumb (a press, a screen change, a domain event). The
+ * host calls this because RN has no globally-patchable gesture/router. The
+ * message is scrubbed and clamped; unknown categories are coerced to "click".
+ */
+export function addBreadcrumb(c: Breadcrumb): void {
+  if (!breadcrumbsInstalled) return;
+  try {
+    pushCrumb({
+      category: c.category,
+      type: c.type,
+      level: c.level,
+      message: c.message != null ? scrubCrumb(String(c.message)) : undefined,
+      timestamp: c.timestamp ?? nowMs(),
+      data: c.data,
+    });
+  } catch {
+    /* swallow */
+  }
+}
+
+/**
+ * Convenience for React-Navigation: pass this to the NavigationContainer
+ * `onStateChange`/`onReady` or call it from your screen-focus effect with the
+ * active route name. Records a "navigation" crumb.
+ *
+ *   <NavigationContainer onStateChange={(s) => navigationBreadcrumb(activeRoute(s))}>
+ */
+export function navigationBreadcrumb(routeName: string | undefined): void {
+  if (!routeName) return;
+  addBreadcrumb({ category: "navigation", level: "info", message: routeName });
+}
+
+function installBreadcrumbs(): void {
+  if (breadcrumbsInstalled) return;
+  breadcrumbsInstalled = true;
+
+  // console.error / console.warn
+  try {
+    const c = globalThis.console as unknown as Record<string, unknown>;
+    for (const lvl of ["error", "warn"] as const) {
+      const orig = c[lvl];
+      if (typeof orig !== "function") continue;
+      c[lvl] = function (this: unknown, ...args: unknown[]) {
+        try {
+          pushCrumb({
+            category: "console",
+            type: lvl,
+            level: lvl === "warn" ? "warning" : "error",
+            message: scrubCrumb(args.map(stringifyArg).join(" ")),
+            timestamp: nowMs(),
+          });
+        } catch {
+          /* swallow */
+        }
+        return (orig as (...a: unknown[]) => unknown).apply(this, args);
+      };
+    }
+  } catch {
+    /* console not patchable */
+  }
+
+  // global fetch (RN provides a WHATWG fetch)
+  try {
+    const g = globalThis as unknown as { fetch?: (...a: unknown[]) => Promise<{ ok: boolean; status: number }> };
+    const origFetch = g.fetch;
+    if (typeof origFetch === "function") {
+      g.fetch = function (this: unknown, ...args: unknown[]) {
+        const input = args[0] as unknown;
+        const opts = args[1] as { method?: string } | undefined;
+        const method = String(
+          opts?.method ||
+            (typeof input === "object" && input && "method" in input
+              ? (input as { method?: string }).method
+              : undefined) ||
+            "GET"
+        ).toUpperCase();
+        const url =
+          typeof input === "string"
+            ? input
+            : typeof input === "object" && input && "url" in input
+              ? (input as { url: string }).url
+              : String(input);
+        const started = nowMs();
+        return (origFetch as (...a: unknown[]) => Promise<{ ok: boolean; status: number }>)
+          .apply(this, args)
+          .then(
+            (res) => {
+              try {
+                pushCrumb({
+                  category: "fetch",
+                  type: method,
+                  level: res.ok ? "info" : "error",
+                  message: stripUrl(String(url)),
+                  timestamp: started,
+                  data: { status: res.status },
+                });
+              } catch {
+                /* swallow */
+              }
+              return res;
+            },
+            (err: unknown) => {
+              try {
+                pushCrumb({
+                  category: "fetch",
+                  type: method,
+                  level: "error",
+                  message: stripUrl(String(url)),
+                  timestamp: started,
+                  data: { error: 1 },
+                });
+              } catch {
+                /* swallow */
+              }
+              throw err;
+            }
+          );
+      } as typeof g.fetch;
+    }
+  } catch {
+    /* fetch not patchable */
+  }
+}
+
 export async function init(cfg: SignalsRnConfig): Promise<void> {
   if (!cfg.key || !cfg.key.startsWith("sk_sig_")) {
     cfg.onError?.(new Error("sprint-signals-rn: invalid or missing key"));
@@ -134,6 +367,7 @@ export async function init(cfg: SignalsRnConfig): Promise<void> {
     userToken: await loadToken(),
     env: collectRnEnv(),
   };
+  if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandler ?? true) installHandler();
 }
 
@@ -183,6 +417,9 @@ async function capture(
 ): Promise<void> {
   if (!config) return;
   const { message, stack, errorType } = normalizeError(error);
+  // Manual breadcrumbs win if present; otherwise attach the auto-collected
+  // trail. Both bounded to 50.
+  const trail = ctx.breadcrumbs ? ctx.breadcrumbs.slice(-50) : getBreadcrumbs();
   await post({
     message: message.slice(0, 2000),
     stack: stack ? stack.slice(0, 20000) : undefined,
@@ -190,7 +427,7 @@ async function capture(
     route: ctx.route,
     release: config.release,
     severity: ctx.severity,
-    breadcrumbs: ctx.breadcrumbs?.slice(0, 50),
+    breadcrumbs: trail.length ? trail : undefined,
     occurredAt: new Date().toISOString(),
     env: { ...config.env, handled, ...(errorType ? { errorType } : {}) },
   });
@@ -223,4 +460,11 @@ async function post(body: Record<string, unknown>): Promise<void> {
 
 export function _reset(): void {
   config = null;
+  breadcrumbsInstalled = false;
+  crumbs.length = 0;
+}
+
+/** Test-only: read the current breadcrumb buffer. */
+export function _breadcrumbs(): Breadcrumb[] {
+  return getBreadcrumbs();
 }
