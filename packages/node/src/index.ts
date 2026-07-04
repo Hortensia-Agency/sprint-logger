@@ -51,6 +51,18 @@ export interface Breadcrumb {
 }
 
 /**
+ * The failing HTTP request context (P2). Mirrors the server's HttpContextSchema
+ * by hand. Captured from the outbound http/https instrumentation on a failed
+ * request and attached to the next captured error. NO headers/body/cookies.
+ */
+export interface HttpContext {
+  method: string;
+  url: string;
+  statusCode?: number;
+  durationMs?: number;
+}
+
+/**
  * Pseudonymous Node env (enrichment plan, D-3). Collected once at init — the
  * server tz/locale/runtime don't change per-error. Deliberately NEVER reads
  * os.hostname() (identity leak). timezone is the SERVER tz, surfaced with a
@@ -105,6 +117,11 @@ export interface CaptureContext {
    * Bounded to the last 50. Keep values PII-free (the server re-scrubs).
    */
   breadcrumbs?: Breadcrumb[];
+  /**
+   * Explicit failing-request context. If omitted, the last auto-captured
+   * failing outbound request is attached.
+   */
+  httpContext?: HttpContext;
 }
 
 interface ResolvedConfig
@@ -134,6 +151,28 @@ let breadcrumbsInstalled = false;
 let origHttpRequest: typeof httpMod.request | null = null;
 let origHttpsRequest: typeof httpsMod.request | null = null;
 let origConsole: { error?: unknown; warn?: unknown } = {};
+
+// The most-recent FAILING outbound request (P2), attached to the next captured
+// error if fresh (a stale failure probably didn't cause this error).
+const HTTP_FRESH_MS = 30_000;
+let lastHttp: { ctx: HttpContext; at: number } | null = null;
+
+function recordFailingHttp(ctx: HttpContext): void {
+  try {
+    lastHttp = { ctx, at: nowMs() };
+  } catch {
+    /* swallow */
+  }
+}
+
+function freshHttp(): HttpContext | undefined {
+  try {
+    if (lastHttp && nowMs() - lastHttp.at <= HTTP_FRESH_MS) return lastHttp.ctx;
+  } catch {
+    /* swallow */
+  }
+  return undefined;
+}
 
 function pushCrumb(c: Breadcrumb): void {
   try {
@@ -297,14 +336,22 @@ function installBreadcrumbs(): void {
           req.on("response", (res: httpTypes.IncomingMessage) => {
             try {
               const status = res.statusCode ?? 0;
+              const failed = status >= 400 || status === 0;
               pushCrumb({
                 category: "fetch",
                 type: meta?.method ?? "GET",
-                level: status >= 400 || status === 0 ? "error" : "info",
+                level: failed ? "error" : "info",
                 message: meta ? stripUrl(meta.url) : undefined,
                 timestamp: started,
                 data: { status },
               });
+              if (failed && meta)
+                recordFailingHttp({
+                  method: meta.method,
+                  url: stripUrl(meta.url),
+                  statusCode: status || undefined,
+                  durationMs: Math.max(0, nowMs() - started),
+                });
             } catch {
               /* swallow */
             }
@@ -319,6 +366,12 @@ function installBreadcrumbs(): void {
                 timestamp: started,
                 data: { error: 1 },
               });
+              if (meta)
+                recordFailingHttp({
+                  method: meta.method,
+                  url: stripUrl(meta.url),
+                  durationMs: Math.max(0, nowMs() - started),
+                });
             } catch {
               /* swallow */
             }
@@ -408,6 +461,7 @@ async function capture(
   // Manual breadcrumbs win if present; otherwise attach the auto-collected
   // trail. Both bounded to 50.
   const trail = ctx.breadcrumbs ? ctx.breadcrumbs.slice(-50) : getBreadcrumbs();
+  const httpContext = ctx.httpContext ?? freshHttp();
   await post({
     message: message.slice(0, 2000),
     stack: stack ? stack.slice(0, 20000) : undefined,
@@ -416,6 +470,7 @@ async function capture(
     release: config.release,
     severity: ctx.severity,
     breadcrumbs: trail.length ? trail : undefined,
+    httpContext,
     occurredAt: new Date().toISOString(),
     env: { ...config.env, handled, ...(errorType ? { errorType } : {}) },
   });
@@ -458,6 +513,7 @@ export function _reset(): void {
   config = null;
   handlersInstalled = false;
   crumbs.length = 0;
+  lastHttp = null;
   if (breadcrumbsInstalled) {
     try {
       const c = console as unknown as Record<string, unknown>;

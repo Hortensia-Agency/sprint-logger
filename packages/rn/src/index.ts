@@ -49,6 +49,18 @@ export interface Breadcrumb {
   data?: Record<string, string | number | boolean | null>;
 }
 
+/**
+ * The failing HTTP request context (P2). Mirrors the server's HttpContextSchema
+ * by hand. Captured from the fetch instrumentation on a failed request and
+ * attached to the next captured error. NO headers/body/cookies — ever.
+ */
+export interface HttpContext {
+  method: string;
+  url: string;
+  statusCode?: number;
+  durationMs?: number;
+}
+
 export interface SignalsRnConfig {
   key: string;
   origin?: string;
@@ -75,6 +87,11 @@ export interface CaptureContext {
    * source-side hygiene is cheaper).
    */
   breadcrumbs?: Breadcrumb[];
+  /**
+   * Explicit failing-request context. If omitted, the last auto-captured
+   * failing request (from the fetch instrumentation) is attached.
+   */
+  httpContext?: HttpContext;
 }
 
 const DEFAULT_ORIGIN = "https://sprint.hortensia-agency.com";
@@ -169,6 +186,28 @@ const CRUMB_MAX = 50;
 const CRUMB_MSG_MAX = 512;
 const crumbs: Breadcrumb[] = [];
 let breadcrumbsInstalled = false;
+
+// The most-recent FAILING request (P2), attached to the next captured error if
+// fresh (a stale failure probably didn't cause this error).
+const HTTP_FRESH_MS = 30_000;
+let lastHttp: { ctx: HttpContext; at: number } | null = null;
+
+function recordFailingHttp(ctx: HttpContext): void {
+  try {
+    lastHttp = { ctx, at: nowMs() };
+  } catch {
+    /* swallow */
+  }
+}
+
+function freshHttp(): HttpContext | undefined {
+  try {
+    if (lastHttp && nowMs() - lastHttp.at <= HTTP_FRESH_MS) return lastHttp.ctx;
+  } catch {
+    /* swallow */
+  }
+  return undefined;
+}
 
 function pushCrumb(c: Breadcrumb): void {
   try {
@@ -326,6 +365,13 @@ function installBreadcrumbs(): void {
                   timestamp: started,
                   data: { status: res.status },
                 });
+                if (!res.ok)
+                  recordFailingHttp({
+                    method,
+                    url: stripUrl(String(url)),
+                    statusCode: res.status,
+                    durationMs: Math.max(0, nowMs() - started),
+                  });
               } catch {
                 /* swallow */
               }
@@ -340,6 +386,11 @@ function installBreadcrumbs(): void {
                   message: stripUrl(String(url)),
                   timestamp: started,
                   data: { error: 1 },
+                });
+                recordFailingHttp({
+                  method,
+                  url: stripUrl(String(url)),
+                  durationMs: Math.max(0, nowMs() - started),
                 });
               } catch {
                 /* swallow */
@@ -420,6 +471,7 @@ async function capture(
   // Manual breadcrumbs win if present; otherwise attach the auto-collected
   // trail. Both bounded to 50.
   const trail = ctx.breadcrumbs ? ctx.breadcrumbs.slice(-50) : getBreadcrumbs();
+  const httpContext = ctx.httpContext ?? freshHttp();
   await post({
     message: message.slice(0, 2000),
     stack: stack ? stack.slice(0, 20000) : undefined,
@@ -428,6 +480,7 @@ async function capture(
     release: config.release,
     severity: ctx.severity,
     breadcrumbs: trail.length ? trail : undefined,
+    httpContext,
     occurredAt: new Date().toISOString(),
     env: { ...config.env, handled, ...(errorType ? { errorType } : {}) },
   });
@@ -462,6 +515,7 @@ export function _reset(): void {
   config = null;
   breadcrumbsInstalled = false;
   crumbs.length = 0;
+  lastHttp = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */

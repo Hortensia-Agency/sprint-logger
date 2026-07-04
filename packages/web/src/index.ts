@@ -42,6 +42,20 @@ export interface Breadcrumb {
   data?: Record<string, string | number | boolean | null>;
 }
 
+/**
+ * The failing HTTP request context (P2). Mirrors the server's HttpContextSchema
+ * by hand (this package has no monorepo dependency). Captured from the fetch/XHR
+ * instrumentation on a failed request (network error or status >= 400) and
+ * attached to the NEXT captured error — most errors are request-driven, and this
+ * is the request that most likely caused it. NO headers/body/cookies — ever.
+ */
+export interface HttpContext {
+  method: string;
+  url: string;
+  statusCode?: number;
+  durationMs?: number;
+}
+
 export interface SignalsWebConfig {
   /**
    * Sprint origin. Defaults to production Sprint. Override for staging /
@@ -74,6 +88,11 @@ export interface CaptureContext {
    * scrubs, but source-side hygiene is cheaper).
    */
   breadcrumbs?: Breadcrumb[];
+  /**
+   * Explicit failing-request context. If omitted, the last auto-captured
+   * failing request (from the fetch/XHR instrumentation) is attached.
+   */
+  httpContext?: HttpContext;
 }
 
 interface Resolved {
@@ -245,6 +264,29 @@ const CRUMB_MAX = 50;
 const CRUMB_MSG_MAX = 512;
 const crumbs: Breadcrumb[] = [];
 let breadcrumbsInstalled = false;
+
+// The most-recent FAILING request (P2). Attached to the next captured error if
+// it's fresh — a stale failure from minutes ago probably didn't cause this
+// error, so it's only attached within HTTP_FRESH_MS.
+const HTTP_FRESH_MS = 30_000;
+let lastHttp: { ctx: HttpContext; at: number } | null = null;
+
+function recordFailingHttp(ctx: HttpContext): void {
+  try {
+    lastHttp = { ctx, at: now() };
+  } catch {
+    /* swallow */
+  }
+}
+
+function freshHttp(): HttpContext | undefined {
+  try {
+    if (lastHttp && now() - lastHttp.at <= HTTP_FRESH_MS) return lastHttp.ctx;
+  } catch {
+    /* swallow */
+  }
+  return undefined;
+}
 
 function pushCrumb(c: Breadcrumb): void {
   try {
@@ -436,6 +478,13 @@ function installBreadcrumbs(): void {
                 timestamp: started,
                 data: { status: res.status },
               });
+              if (!res.ok)
+                recordFailingHttp({
+                  method,
+                  url: stripUrl(String(url)),
+                  statusCode: res.status,
+                  durationMs: Math.max(0, now() - started),
+                });
             } catch {
               /* swallow */
             }
@@ -450,6 +499,11 @@ function installBreadcrumbs(): void {
                 message: stripUrl(String(url)),
                 timestamp: started,
                 data: { error: 1 },
+              });
+              recordFailingHttp({
+                method,
+                url: stripUrl(String(url)),
+                durationMs: Math.max(0, now() - started),
               });
             } catch {
               /* swallow */
@@ -492,14 +546,22 @@ function installBreadcrumbs(): void {
           const started = now();
           this.addEventListener("loadend", () => {
             try {
+              const failed = this.status >= 400 || this.status === 0;
               pushCrumb({
                 category: "xhr",
                 type: meta?.method,
-                level: this.status >= 400 || this.status === 0 ? "error" : "info",
+                level: failed ? "error" : "info",
                 message: meta ? stripUrl(meta.url) : undefined,
                 timestamp: started,
                 data: { status: this.status },
               });
+              if (failed && meta)
+                recordFailingHttp({
+                  method: meta.method,
+                  url: stripUrl(meta.url),
+                  statusCode: this.status || undefined,
+                  durationMs: Math.max(0, now() - started),
+                });
             } catch {
               /* swallow */
             }
@@ -595,6 +657,8 @@ function report(
   const crumbs = ctx.breadcrumbs
     ? (ctx.breadcrumbs as Breadcrumb[]).slice(-50)
     : getBreadcrumbs();
+  // Explicit httpContext wins; otherwise attach the last fresh failing request.
+  const httpContext = ctx.httpContext ?? freshHttp();
   void post({
     message: message.slice(0, 2000),
     stack: stack ? stack.slice(0, 20000) : undefined,
@@ -603,6 +667,7 @@ function report(
     release: config.release,
     severity: ctx.severity,
     breadcrumbs: crumbs.length ? crumbs : undefined,
+    httpContext,
     occurredAt: new Date().toISOString(),
     env: envFor(handled, errorType),
   });
@@ -642,6 +707,7 @@ export function _reset(): void {
   handlersInstalled = false;
   breadcrumbsInstalled = false;
   crumbs.length = 0;
+  lastHttp = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */
