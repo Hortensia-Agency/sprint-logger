@@ -26,6 +26,22 @@
 
 export type Severity = "low" | "medium" | "high" | "blocker";
 
+/**
+ * A single breadcrumb — one thing that happened before an error. Mirrors the
+ * server's BreadcrumbSchema (lib/signals/context.ts) by hand: this package has
+ * no dependency on the Sprint monorepo, so the wire shape is duplicated, not
+ * imported. Keep the two in lock-step.
+ */
+export interface Breadcrumb {
+  category: "console" | "click" | "navigation" | "fetch" | "xhr";
+  type?: string;
+  level?: "debug" | "info" | "warning" | "error";
+  message?: string;
+  /** ms epoch, client clock — advisory ordering only. */
+  timestamp?: number;
+  data?: Record<string, string | number | boolean | null>;
+}
+
 export interface SignalsWebConfig {
   /**
    * Sprint origin. Defaults to production Sprint. Override for staging /
@@ -36,6 +52,13 @@ export interface SignalsWebConfig {
   release?: string;
   /** Hook window 'error' + 'unhandledrejection'. Default true. */
   installGlobalHandlers?: boolean;
+  /**
+   * Auto-collect breadcrumbs (console/click/navigation/fetch/XHR) into a
+   * bounded trail attached to each captured event. Default true. Set false to
+   * fully disable the instrumentation (the kill switch if a host-app conflict
+   * surfaces).
+   */
+  captureBreadcrumbs?: boolean;
   /** Called (best-effort) if a capture POST fails. For host-side debugging. */
   onError?: (err: unknown) => void;
 }
@@ -45,8 +68,12 @@ export interface CaptureContext {
   userToken?: string;
   route?: string;
   severity?: Severity;
-  /** Bounded breadcrumb list — last-N actions. Keep values PII-free. */
-  breadcrumbs?: unknown[];
+  /**
+   * Explicit breadcrumb list. If omitted, the auto-collected trail is attached
+   * instead. Bounded to the last 50. Keep values PII-free (the server also
+   * scrubs, but source-side hygiene is cheaper).
+   */
+  breadcrumbs?: Breadcrumb[];
 }
 
 interface Resolved {
@@ -83,6 +110,7 @@ export function init(key: string, cfg: SignalsWebConfig = {}): void {
   };
   env = buildEnv();
   void enrichFromClientHints();
+  if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandlers ?? true) installHandlers();
 }
 
@@ -203,6 +231,303 @@ function envFor(handled: boolean, errorType?: string): Record<string, unknown> {
   return { ...env, handled, ...(errorType ? { errorType } : {}) };
 }
 
+// ---- breadcrumbs (auto-capture) ---------------------------------------
+//
+// A bounded ring buffer of what happened before an error: console lines,
+// clicks, navigations, network calls. Every source is wrapped DEFENSIVELY — a
+// throw inside a wrapper must never break the host app's own call, so each
+// wrapper try/catches its own bookkeeping and always delegates to the original.
+// Values are scrubbed at the source (query strings stripped, email/IP redacted);
+// the server re-scrubs regardless (the key is public), so this is best-effort
+// hygiene, not the security boundary.
+
+const CRUMB_MAX = 50;
+const CRUMB_MSG_MAX = 512;
+const crumbs: Breadcrumb[] = [];
+let breadcrumbsInstalled = false;
+
+function pushCrumb(c: Breadcrumb): void {
+  try {
+    crumbs.push(c);
+    if (crumbs.length > CRUMB_MAX) crumbs.shift();
+  } catch {
+    /* never let bookkeeping throw into a wrapped host call */
+  }
+}
+
+function getBreadcrumbs(): Breadcrumb[] {
+  // Copy so a later push can't mutate an in-flight payload.
+  return crumbs.slice(-CRUMB_MAX);
+}
+
+const EMAIL_RE_G = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
+const IPV4_RE_G = /\b\d{1,3}(\.\d{1,3}){3}\b/g;
+
+function scrubCrumb(v: string): string {
+  let s = v.length > CRUMB_MSG_MAX ? v.slice(0, CRUMB_MSG_MAX) : v;
+  s = s.replace(EMAIL_RE_G, "[email]").replace(IPV4_RE_G, "[ip]");
+  return s;
+}
+
+// Strip query/hash from a URL so tokens/emails in query strings never leave the
+// browser. Non-URL strings pass through.
+function stripUrl(u: string): string {
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
+      const parsed = new URL(u);
+      return scrubCrumb(parsed.origin + parsed.pathname);
+    }
+    if (u.startsWith("/")) {
+      const q = u.search(/[?#]/);
+      return scrubCrumb(q === -1 ? u : u.slice(0, q));
+    }
+  } catch {
+    /* fall through */
+  }
+  return scrubCrumb(u);
+}
+
+function now(): number {
+  try {
+    return Date.now();
+  } catch {
+    return 0;
+  }
+}
+
+// Best-effort one-line label for a clicked element: tag + id + first class.
+function describeTarget(t: EventTarget | null): string | undefined {
+  try {
+    const el = t as Element | null;
+    if (!el || !el.tagName) return undefined;
+    let s = el.tagName.toLowerCase();
+    const id = (el as HTMLElement).id;
+    if (id) s += `#${id}`;
+    const cls = (el as HTMLElement).className;
+    if (typeof cls === "string" && cls.trim())
+      s += `.${cls.trim().split(/\s+/)[0]}`;
+    return s.slice(0, 128);
+  } catch {
+    return undefined;
+  }
+}
+
+function installBreadcrumbs(): void {
+  if (breadcrumbsInstalled) return;
+  if (typeof window === "undefined") return;
+  breadcrumbsInstalled = true;
+
+  // console.error / console.warn
+  try {
+    for (const lvl of ["error", "warn"] as const) {
+      const orig = console[lvl];
+      if (typeof orig !== "function") continue;
+      console[lvl] = function (...args: unknown[]) {
+        try {
+          pushCrumb({
+            category: "console",
+            type: lvl,
+            level: lvl === "warn" ? "warning" : "error",
+            message: scrubCrumb(args.map(stringifyArg).join(" ")),
+            timestamp: now(),
+          });
+        } catch {
+          /* swallow */
+        }
+        return orig.apply(this, args as []);
+      };
+    }
+  } catch {
+    /* console not patchable */
+  }
+
+  // click (capture phase, passive — never interferes with the host)
+  try {
+    window.addEventListener(
+      "click",
+      (e) => {
+        try {
+          const label = describeTarget((e as MouseEvent).target);
+          pushCrumb({
+            category: "click",
+            level: "info",
+            message: label,
+            timestamp: now(),
+          });
+        } catch {
+          /* swallow */
+        }
+      },
+      { capture: true, passive: true }
+    );
+  } catch {
+    /* addEventListener unavailable */
+  }
+
+  // navigation: history.pushState / replaceState + popstate
+  try {
+    const h = window.history;
+    for (const m of ["pushState", "replaceState"] as const) {
+      const orig = h[m];
+      if (typeof orig !== "function") continue;
+      h[m] = function (this: History, ...args: Parameters<History["pushState"]>) {
+        try {
+          const url = args[2];
+          pushCrumb({
+            category: "navigation",
+            type: m,
+            level: "info",
+            message: url != null ? stripUrl(String(url)) : undefined,
+            timestamp: now(),
+          });
+        } catch {
+          /* swallow */
+        }
+        return orig.apply(this, args);
+      };
+    }
+    window.addEventListener("popstate", () => {
+      try {
+        pushCrumb({
+          category: "navigation",
+          type: "popstate",
+          level: "info",
+          message: stripUrl(location.pathname + location.search),
+          timestamp: now(),
+        });
+      } catch {
+        /* swallow */
+      }
+    });
+  } catch {
+    /* history not patchable */
+  }
+
+  // fetch
+  try {
+    const origFetch = window.fetch;
+    if (typeof origFetch === "function") {
+      window.fetch = function (
+        this: typeof window,
+        ...args: Parameters<typeof fetch>
+      ) {
+        const [input, opts] = args;
+        const method =
+          (opts?.method ||
+            (typeof input === "object" && input && "method" in input
+              ? (input as Request).method
+              : undefined) ||
+            "GET").toUpperCase();
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : (input as Request).url;
+        const started = now();
+        return origFetch.apply(this, args).then(
+          (res) => {
+            try {
+              pushCrumb({
+                category: "fetch",
+                type: method,
+                level: res.ok ? "info" : "error",
+                message: stripUrl(String(url)),
+                timestamp: started,
+                data: { status: res.status },
+              });
+            } catch {
+              /* swallow */
+            }
+            return res;
+          },
+          (err) => {
+            try {
+              pushCrumb({
+                category: "fetch",
+                type: method,
+                level: "error",
+                message: stripUrl(String(url)),
+                timestamp: started,
+                data: { error: 1 },
+              });
+            } catch {
+              /* swallow */
+            }
+            throw err;
+          }
+        );
+      };
+    }
+  } catch {
+    /* fetch not patchable */
+  }
+
+  // XMLHttpRequest
+  try {
+    const XHR = window.XMLHttpRequest;
+    if (XHR && XHR.prototype) {
+      const origOpen = XHR.prototype.open;
+      const origSend = XHR.prototype.send;
+      XHR.prototype.open = function (
+        this: XMLHttpRequest & { __sig?: { method: string; url: string } },
+        method: string,
+        url: string | URL,
+        ...rest: unknown[]
+      ) {
+        try {
+          this.__sig = { method: String(method).toUpperCase(), url: String(url) };
+        } catch {
+          /* swallow */
+        }
+        // @ts-expect-error variadic passthrough to the native open
+        return origOpen.apply(this, [method, url, ...rest]);
+      };
+      XHR.prototype.send = function (
+        this: XMLHttpRequest & { __sig?: { method: string; url: string } },
+        ...args: unknown[]
+      ) {
+        try {
+          const meta = this.__sig;
+          const started = now();
+          this.addEventListener("loadend", () => {
+            try {
+              pushCrumb({
+                category: "xhr",
+                type: meta?.method,
+                level: this.status >= 400 || this.status === 0 ? "error" : "info",
+                message: meta ? stripUrl(meta.url) : undefined,
+                timestamp: started,
+                data: { status: this.status },
+              });
+            } catch {
+              /* swallow */
+            }
+          });
+        } catch {
+          /* swallow */
+        }
+        // @ts-expect-error variadic passthrough to the native send
+        return origSend.apply(this, args);
+      };
+    }
+  } catch {
+    /* XHR not patchable */
+  }
+}
+
+// Compact a console arg to a short string without throwing on circular refs.
+function stringifyArg(a: unknown): string {
+  try {
+    if (typeof a === "string") return a;
+    if (a instanceof Error) return `${a.name}: ${a.message}`;
+    if (typeof a === "object" && a !== null) return JSON.stringify(a).slice(0, 256);
+    return String(a);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 // ---- global handlers (uncaught → handled:false) -----------------------
 let handlersInstalled = false;
 function installHandlers(): void {
@@ -265,6 +590,11 @@ function report(
   errorType?: string
 ): void {
   if (!config || !message) return;
+  // Manual breadcrumbs (passed to capture()) win if present; otherwise attach
+  // the auto-collected trail. Both bounded to 50.
+  const crumbs = ctx.breadcrumbs
+    ? (ctx.breadcrumbs as Breadcrumb[]).slice(-50)
+    : getBreadcrumbs();
   void post({
     message: message.slice(0, 2000),
     stack: stack ? stack.slice(0, 20000) : undefined,
@@ -272,7 +602,7 @@ function report(
     route: ctx.route ?? route(),
     release: config.release,
     severity: ctx.severity,
-    breadcrumbs: ctx.breadcrumbs?.slice(0, 50),
+    breadcrumbs: crumbs.length ? crumbs : undefined,
     occurredAt: new Date().toISOString(),
     env: envFor(handled, errorType),
   });
@@ -305,9 +635,16 @@ async function post(body: Record<string, unknown>): Promise<void> {
   }
 }
 
-/** Test/teardown helper — clears config + handler flag. */
+/** Test/teardown helper — clears config, handler flag, and breadcrumb buffer. */
 export function _reset(): void {
   config = null;
   env = {};
   handlersInstalled = false;
+  breadcrumbsInstalled = false;
+  crumbs.length = 0;
+}
+
+/** Test-only: read the current breadcrumb buffer. */
+export function _breadcrumbs(): Breadcrumb[] {
+  return getBreadcrumbs();
 }
