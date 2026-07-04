@@ -535,3 +535,53 @@ export function _reset(): void {
 export function _breadcrumbs(): Breadcrumb[] {
   return getBreadcrumbs();
 }
+
+// ---- analytics (P5) ---------------------------------------------------
+//
+// A server has no pageviews, so Node analytics is for custom usage events only:
+// trackEvent(name) — e.g. a job ran, an API route was hit. Pseudonymous; the
+// client event_id makes each beacon idempotent server-side.
+
+function uuid(): string {
+  // Prefer crypto.randomUUID (Node 16+); fall back to a random hex.
+  try {
+    const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+    if (c?.randomUUID) return c.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  let s = "";
+  for (let i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16);
+  return s;
+}
+
+async function sendAnalytics(body: Record<string, unknown>): Promise<void> {
+  if (!config) return;
+  try {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v;
+    await fetch(`${config.origin}/api/analytics/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Signal-Key": config.key },
+      body: JSON.stringify(clean),
+    });
+  } catch (err) {
+    config?.onError?.(err);
+  }
+}
+
+/**
+ * Record a custom usage event from a Node service (e.g. "job.completed"). The
+ * name is sent as the route dimension. Pseudonymous — pass no PII.
+ */
+export function trackEvent(name: string, sessionToken?: string): void {
+  if (!config || !name) return;
+  void sendAnalytics({
+    eventId: uuid(),
+    type: "custom",
+    route: name.slice(0, 500),
+    sessionToken,
+    platform: "node",
+    occurredAt: new Date().toISOString(),
+  });
+}

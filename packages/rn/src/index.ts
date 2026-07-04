@@ -516,9 +516,55 @@ export function _reset(): void {
   breadcrumbsInstalled = false;
   crumbs.length = 0;
   lastHttp = null;
+  analyticsSessionToken = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */
 export function _breadcrumbs(): Breadcrumb[] {
   return getBreadcrumbs();
+}
+
+// ---- analytics (P5) ---------------------------------------------------
+//
+// RN has no route URLs to auto-track, so screenviews are host-driven:
+// trackScreenview(name) from your navigation listener. Pseudonymous; the client
+// event_id makes each beacon idempotent server-side.
+
+let analyticsSessionToken: string | null = null;
+
+function analyticsSid(): string {
+  if (!analyticsSessionToken) analyticsSessionToken = "sess_" + randHex();
+  return analyticsSessionToken;
+}
+
+function uuid(): string {
+  return randHex() + randHex();
+}
+
+async function sendAnalytics(body: Record<string, unknown>): Promise<void> {
+  if (!config) return;
+  try {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v;
+    await fetch(`${config.origin}/api/analytics/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Signal-Key": config.key },
+      body: JSON.stringify(clean),
+    });
+  } catch (err) {
+    config?.onError?.(err);
+  }
+}
+
+/** Record a screen view (call from your React-Navigation state listener). */
+export function trackScreenview(screenName: string): void {
+  if (!config || !screenName) return;
+  void sendAnalytics({
+    eventId: uuid(),
+    type: "screenview",
+    route: String(screenName).slice(0, 500),
+    sessionToken: analyticsSid(),
+    platform: (config.env.platform as string) ?? "ios",
+    occurredAt: new Date().toISOString(),
+  });
 }

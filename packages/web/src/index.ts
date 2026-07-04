@@ -73,6 +73,13 @@ export interface SignalsWebConfig {
    * surfaces).
    */
   captureBreadcrumbs?: boolean;
+  /**
+   * Send traffic/usage analytics beacons (pageviews + session) to the separate
+   * analytics endpoint. Default false — analytics is opt-in per host, gated by
+   * the tenant's entitlement server-side. When true, an initial pageview fires
+   * on init and each SPA route change (history API) sends another.
+   */
+  enableAnalytics?: boolean;
   /** Called (best-effort) if a capture POST fails. For host-side debugging. */
   onError?: (err: unknown) => void;
 }
@@ -131,6 +138,7 @@ export function init(key: string, cfg: SignalsWebConfig = {}): void {
   void enrichFromClientHints();
   if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandlers ?? true) installHandlers();
+  if (cfg.enableAnalytics) installAnalytics();
 }
 
 // ---- pseudonymous token (D6) ------------------------------------------
@@ -700,6 +708,142 @@ async function post(body: Record<string, unknown>): Promise<void> {
   }
 }
 
+// ---- analytics (P5) ---------------------------------------------------
+//
+// A lightweight traffic/usage beacon on a SEPARATE endpoint from error capture.
+// One session per browser session (sessionStorage), pageviews on init + each SPA
+// route change. Fire-and-forget via sendBeacon with a fetch keepalive fallback.
+// Every field is pseudonymous; the client event_id makes the beacon idempotent
+// server-side (ON CONFLICT). PII never leaves here — the route is query-stripped.
+
+const SESSION_KEY = "_sprint_analytics_sid";
+let analyticsInstalled = false;
+let lastAnalyticsPath: string | null = null;
+
+function sessionToken(): string {
+  try {
+    const existing = sessionStorage.getItem(SESSION_KEY);
+    if (existing) return existing;
+    const fresh = "sess_" + randHex();
+    sessionStorage.setItem(SESSION_KEY, fresh);
+    return fresh;
+  } catch {
+    return "sess_" + randHex();
+  }
+}
+
+function uuid(): string {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return (crypto as unknown as { randomUUID(): string }).randomUUID();
+    }
+  } catch {
+    /* fall through */
+  }
+  return randHex() + randHex();
+}
+
+function analyticsPath(): string | undefined {
+  try {
+    return location.pathname.slice(0, 500);
+  } catch {
+    return undefined;
+  }
+}
+
+function sendAnalytics(body: Record<string, unknown>): void {
+  if (!config) return;
+  try {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v;
+    const url = `${config.origin}/api/analytics/ingest`;
+    const payload = JSON.stringify(clean);
+    // sendBeacon can't set X-Signal-Key, so the beacon path uses fetch keepalive
+    // (which can). sendBeacon is the fallback when fetch keepalive is absent.
+    if (typeof fetch === "function") {
+      void fetch(url, {
+        method: "POST",
+        keepalive: true,
+        headers: { "Content-Type": "application/json", "X-Signal-Key": config.key },
+        body: payload,
+      }).catch(() => {});
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+    }
+  } catch {
+    /* analytics is best-effort */
+  }
+}
+
+/** Send one pageview beacon (deduped against the last path). */
+export function trackPageview(path?: string): void {
+  if (!config) return;
+  const p = path ?? analyticsPath();
+  if (!p || p === lastAnalyticsPath) return;
+  lastAnalyticsPath = p;
+  sendAnalytics({
+    eventId: uuid(),
+    type: "pageview",
+    route: p,
+    sessionToken: sessionToken(),
+    platform: "web",
+    occurredAt: new Date().toISOString(),
+  });
+}
+
+function installAnalytics(): void {
+  if (analyticsInstalled) return;
+  if (typeof window === "undefined") return;
+  analyticsInstalled = true;
+
+  // One session-start beacon per browser session.
+  try {
+    const isNew = !sessionStorage.getItem(SESSION_KEY);
+    if (isNew) {
+      sendAnalytics({
+        eventId: uuid(),
+        type: "session",
+        sessionToken: sessionToken(),
+        platform: "web",
+        occurredAt: new Date().toISOString(),
+      });
+    }
+  } catch {
+    /* sessionStorage unavailable — skip the session beacon, still track views */
+  }
+
+  // Initial + SPA route-change pageviews. The breadcrumb collector already
+  // patches history; here we listen for our own signal by re-wrapping softly.
+  trackPageview();
+  try {
+    const h = window.history;
+    for (const m of ["pushState", "replaceState"] as const) {
+      const orig = h[m];
+      if (typeof orig !== "function") continue;
+      h[m] = function (this: History, ...args: Parameters<History["pushState"]>) {
+        const r = orig.apply(this, args);
+        try {
+          trackPageview();
+        } catch {
+          /* swallow */
+        }
+        return r;
+      };
+    }
+    window.addEventListener("popstate", () => {
+      try {
+        trackPageview();
+      } catch {
+        /* swallow */
+      }
+    });
+  } catch {
+    /* history not patchable — only the initial pageview fires */
+  }
+}
+
 /** Test/teardown helper — clears config, handler flag, and breadcrumb buffer. */
 export function _reset(): void {
   config = null;
@@ -708,6 +852,8 @@ export function _reset(): void {
   breadcrumbsInstalled = false;
   crumbs.length = 0;
   lastHttp = null;
+  analyticsInstalled = false;
+  lastAnalyticsPath = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */
