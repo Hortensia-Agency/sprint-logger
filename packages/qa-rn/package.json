@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/qa-rn",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sprint QA widget for React Native / Expo host apps — in-context bug reporting and QA queue, authed via a mobile_widget PAT.",
   "keywords": [
     "qa",
