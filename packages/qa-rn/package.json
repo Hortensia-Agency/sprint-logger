@@ -1,0 +1,65 @@
+{
+  "name": "@sprint-logger/qa-rn",
+  "version": "0.1.0",
+  "description": "Sprint QA widget for React Native / Expo host apps — in-context bug reporting and QA queue, authed via a mobile_widget PAT.",
+  "keywords": [
+    "qa",
+    "bug-reporting",
+    "sprint",
+    "react-native",
+    "expo"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hortensia-Agency/sprint-logger.git",
+    "directory": "packages/qa-rn"
+  },
+  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/qa-rn#readme",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "verify": "tsup && publint --strict"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-native": ">=0.73",
+    "react-native-gesture-handler": ">=2.0.0",
+    "react-native-reanimated": ">=3.0.0",
+    "react-native-view-shot": ">=3.0.0",
+    "@react-native-async-storage/async-storage": ">=1.21.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native-view-shot": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "publint": "^0.2.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.0"
+  }
+}
