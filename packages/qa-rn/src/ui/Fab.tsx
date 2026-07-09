@@ -11,7 +11,7 @@
  */
 
 import React, { useEffect } from "react";
-import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { StyleSheet, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   runOnJS,
@@ -61,18 +61,22 @@ export function Fab({ onPress }: { onPress: () => void }) {
       ty.value = startY.value + e.translationY;
     })
     .onEnd((e: { translationX: number; translationY: number }) => {
-      const cx = clamp(tx.value, MARGIN, width - SIZE - MARGIN);
-      const cy = clamp(ty.value, MARGIN, height - SIZE - MARGIN);
-      tx.value = withSpring(cx, { damping: 18, stiffness: 180 });
-      ty.value = withSpring(cy, { damping: 18, stiffness: 180 });
       const moved =
         Math.abs(e.translationX) > TAP_THRESHOLD ||
         Math.abs(e.translationY) > TAP_THRESHOLD;
       if (!moved) {
         runOnJS(onPress)();
-      } else {
-        runOnJS(persist)(cx, cy);
+        return;
       }
+      // Snap to the nearer vertical edge (Messenger-bubble behavior); clamp Y.
+      const leftX = MARGIN;
+      const rightX = width - SIZE - MARGIN;
+      const center = tx.value + SIZE / 2;
+      const snapX = center < width / 2 ? leftX : rightX;
+      const cy = clamp(ty.value, MARGIN, height - SIZE - MARGIN);
+      tx.value = withSpring(snapX, { damping: 18, stiffness: 180 });
+      ty.value = withSpring(cy, { damping: 18, stiffness: 180 });
+      runOnJS(persist)(snapX, cy);
     });
 
   const style = useAnimatedStyle(() => ({
@@ -83,7 +87,7 @@ export function Fab({ onPress }: { onPress: () => void }) {
     <GestureDetector gesture={pan}>
       <Animated.View style={[styles.fab, style]}>
         <View style={styles.inner}>
-          <Text style={styles.glyph}>QA</Text>
+          <BugGlyph />
         </View>
       </Animated.View>
     </GestureDetector>
@@ -93,6 +97,35 @@ export function Fab({ onPress }: { onPress: () => void }) {
 function clamp(v: number, lo: number, hi: number): number {
   "worklet";
   return Math.min(Math.max(v, lo), hi);
+}
+
+/**
+ * A small ladybug-style bug drawn from Views — avoids an icon/SVG dependency.
+ * Six legs angle out symmetrically, two antennae up top, an oval shell with a
+ * center seam and a round head. Sized to sit centered in the 56px FAB.
+ */
+function BugGlyph() {
+  const c = theme.primaryFg;
+  return (
+    <View style={styles.bug}>
+      {/* antennae */}
+      <View style={[styles.antenna, { left: 9, transform: [{ rotate: "-35deg" }] }]} />
+      <View style={[styles.antenna, { right: 9, transform: [{ rotate: "35deg" }] }]} />
+      {/* legs (three pairs) */}
+      <View style={[styles.leg, { top: 9, left: 1, transform: [{ rotate: "35deg" }] }]} />
+      <View style={[styles.leg, { top: 9, right: 1, transform: [{ rotate: "-35deg" }] }]} />
+      <View style={[styles.leg, { top: 14, left: 0 }]} />
+      <View style={[styles.leg, { top: 14, right: 0 }]} />
+      <View style={[styles.leg, { top: 19, left: 1, transform: [{ rotate: "-35deg" }] }]} />
+      <View style={[styles.leg, { top: 19, right: 1, transform: [{ rotate: "35deg" }] }]} />
+      {/* head */}
+      <View style={styles.head} />
+      {/* shell */}
+      <View style={styles.shell}>
+        <View style={[styles.seam, { backgroundColor: theme.primary }]} />
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -114,9 +147,46 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
   },
-  glyph: {
-    color: theme.primaryFg,
-    fontWeight: "700",
-    fontSize: 16,
+  bug: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+  },
+  head: {
+    position: "absolute",
+    top: 4,
+    width: 9,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: theme.primaryFg,
+  },
+  shell: {
+    position: "absolute",
+    top: 9,
+    width: 16,
+    height: 17,
+    borderRadius: 8,
+    backgroundColor: theme.primaryFg,
+    alignItems: "center",
+    overflow: "hidden",
+  },
+  seam: {
+    width: 1.5,
+    height: "100%",
+  },
+  antenna: {
+    position: "absolute",
+    top: 0,
+    width: 1.5,
+    height: 5,
+    borderRadius: 1,
+    backgroundColor: theme.primaryFg,
+  },
+  leg: {
+    position: "absolute",
+    width: 6,
+    height: 1.5,
+    borderRadius: 1,
+    backgroundColor: theme.primaryFg,
   },
 });
