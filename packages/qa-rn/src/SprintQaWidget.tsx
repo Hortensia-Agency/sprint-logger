@@ -35,6 +35,7 @@ import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { Fab } from "./ui/Fab";
 import { BottomSheet } from "./ui/BottomSheet";
 import { ReportView } from "./ui/ReportView";
+import { makeAudioRecorder, type AudioRecorder } from "./audio";
 import { QueueView } from "./ui/QueueView";
 import { DetailView } from "./ui/DetailView";
 import { PatGate } from "./ui/PatGate";
@@ -76,6 +77,12 @@ export interface SprintQaWidgetProps {
   /** Optional S4 screenshot capture — returns a RN file part or null. */
   captureScreenshot?: () => Promise<{ uri: string; name: string; type: string } | null>;
   /**
+   * Optional voice-note recorder. Defaults to an expo-av-backed recorder when
+   * `expo-av` is installed; pass your own to override, or `null` to disable
+   * the control even when expo-av is present.
+   */
+  audioRecorder?: AudioRecorder | null;
+  /**
    * Optional host-context thunk, read at report time. The SDK can't see the
    * host's current route on its own — pass it here (typically from React
    * Navigation / Expo Router) so each report carries the screen it was filed
@@ -85,6 +92,17 @@ export interface SprintQaWidgetProps {
 }
 
 export function SprintQaWidget(props: SprintQaWidgetProps) {
+  // Voice-note recorder: host override wins; `null` disables; otherwise fall
+  // back to the expo-av recorder (itself null when expo-av isn't installed).
+  // Stable across renders so an in-progress recording survives re-renders.
+  const recorderRef = useRef<AudioRecorder | null | undefined>(undefined);
+  if (recorderRef.current === undefined) {
+    recorderRef.current =
+      props.audioRecorder !== undefined
+        ? props.audioRecorder
+        : makeAudioRecorder();
+  }
+
   // L0 — build-time bundle gate (host's own baked-in env). Cannot change at
   // runtime; if false the widget is fully inert.
   const l0 = passesL0({
@@ -251,6 +269,7 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
         <ReportView
           client={activeClient}
           captureScreenshot={props.captureScreenshot}
+          audioRecorder={recorderRef.current}
           getContext={props.getContext}
           onReported={() => setOpen(false)}
         />

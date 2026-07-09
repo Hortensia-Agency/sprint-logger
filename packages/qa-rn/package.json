@@ -51,10 +51,12 @@
     "react-native-gesture-handler": ">=2.0.0",
     "react-native-reanimated": ">=3.0.0",
     "react-native-view-shot": ">=3.0.0",
+    "expo-av": ">=13.0.0",
     "@react-native-async-storage/async-storage": ">=1.21.0"
   },
   "peerDependenciesMeta": {
-    "react-native-view-shot": { "optional": true }
+    "react-native-view-shot": { "optional": true },
+    "expo-av": { "optional": true }
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

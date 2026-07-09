@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -11,18 +11,29 @@ import { theme, severityColor } from "./theme";
 import { buildContext, type HostContext } from "../context";
 import type { SprintQaClient } from "../client";
 import type { Severity } from "../contract";
+import type { AudioRecorder, AudioPart } from "../audio";
 
 const SEVERITIES: Severity[] = ["low", "medium", "high", "blocker"];
+const AUDIO_MAX_SECONDS = 120; // 2-minute soft cap
+
+function fmtDuration(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r < 10 ? "0" : ""}${r}`;
+}
 
 export function ReportView({
   client,
   onReported,
   captureScreenshot,
+  audioRecorder,
   getContext,
 }: {
   client: SprintQaClient;
   onReported: (taskId: number) => void;
   captureScreenshot?: () => Promise<{ uri: string; name: string; type: string } | null>;
+  audioRecorder?: AudioRecorder | null;
   getContext?: () => HostContext | undefined;
 }) {
   const [title, setTitle] = useState("");
@@ -31,6 +42,50 @@ export function ReportView({
   const [withShot, setWithShot] = useState(!!captureScreenshot);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [audio, setAudio] = useState<AudioPart | null>(null);
+  const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recCap = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearRecTimers = () => {
+    if (recTimer.current) clearInterval(recTimer.current);
+    if (recCap.current) clearTimeout(recCap.current);
+    recTimer.current = null;
+    recCap.current = null;
+  };
+
+  const stopRecording = async (): Promise<AudioPart | null> => {
+    if (!audioRecorder) return null;
+    clearRecTimers();
+    setRecording(false);
+    try {
+      const part = await audioRecorder.stop();
+      if (part) setAudio(part);
+      return part;
+    } catch {
+      setError("Couldn't save the voice note.");
+      return null;
+    }
+  };
+
+  const startRecording = async () => {
+    if (!audioRecorder) return;
+    setError(null);
+    try {
+      await audioRecorder.start();
+    } catch {
+      setError("Microphone access denied — allow it to record a voice note.");
+      return;
+    }
+    setAudio(null);
+    setRecSeconds(0);
+    setRecording(true);
+    recTimer.current = setInterval(() => setRecSeconds((s) => s + 1), 1000);
+    recCap.current = setTimeout(() => void stopRecording(), AUDIO_MAX_SECONDS * 1000);
+  };
+
+  useEffect(() => () => clearRecTimers(), []);
 
   async function submit() {
     if (!title.trim()) {
@@ -48,6 +103,8 @@ export function ReportView({
         },
         getContext?.()
       );
+      // Flush an in-progress recording before filing so it isn't lost.
+      const voiceNote = recording ? await stopRecording() : audio;
       const res = await client.report(body);
       if (withShot && captureScreenshot) {
         const shot = await captureScreenshot();
@@ -56,6 +113,11 @@ export function ReportView({
             /* report already filed; screenshot is best-effort */
           });
         }
+      }
+      if (voiceNote) {
+        await client.uploadAudioNote(res.bugTaskId, voiceNote).catch(() => {
+          /* report already filed; voice note is best-effort */
+        });
       }
       onReported(res.bugTaskId);
     } catch {
@@ -117,6 +179,32 @@ export function ReportView({
         </Pressable>
       )}
 
+      {audioRecorder && (
+        <View>
+          <Text style={styles.label}>Voice note</Text>
+          <Pressable
+            style={[styles.recBtn, recording && styles.recBtnOn]}
+            onPress={() => (recording ? void stopRecording() : void startRecording())}
+          >
+            <Text style={[styles.recText, recording && styles.recTextOn]}>
+              {recording
+                ? `◼ Stop (${fmtDuration(recSeconds)})`
+                : audio
+                  ? "🎙 Re-record voice note"
+                  : "🎙 Record voice note"}
+            </Text>
+          </Pressable>
+          {audio && !recording && (
+            <View style={styles.audioRow}>
+              <Text style={styles.audioLabel}>🎙 Voice note attached</Text>
+              <Pressable onPress={() => setAudio(null)}>
+                <Text style={styles.audioRemove}>Remove</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
+
       {error && <Text style={styles.error}>{error}</Text>}
 
       <Pressable
@@ -165,6 +253,25 @@ const styles = StyleSheet.create({
   },
   checkboxOn: { backgroundColor: theme.primary, borderColor: theme.primary },
   checkboxLabel: { color: theme.fg, fontSize: 13 },
+  recBtn: {
+    borderWidth: 1,
+    borderColor: theme.borderSolid,
+    borderRadius: theme.radiusSm,
+    paddingVertical: 10,
+    alignItems: "center",
+    marginTop: 4,
+  },
+  recBtnOn: { borderColor: theme.destructive },
+  recText: { color: theme.fg, fontSize: 14, fontWeight: "600" },
+  recTextOn: { color: theme.destructive },
+  audioRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 6,
+  },
+  audioLabel: { color: theme.fg, fontSize: 13 },
+  audioRemove: { color: theme.destructive, fontSize: 13 },
   error: { color: theme.destructive, fontSize: 13, marginTop: 4 },
   submit: {
     backgroundColor: theme.primary,

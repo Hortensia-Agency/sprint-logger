@@ -6,6 +6,8 @@ export type {
 export { SprintQaClient, SprintQaError } from "./client";
 export { makeScreenshotCapture } from "./screenshot";
 export type { ScreenshotPart } from "./screenshot";
+export { makeAudioRecorder } from "./audio";
+export type { AudioRecorder, AudioPart } from "./audio";
 export type { HostContext } from "./context";
 export type { SprintQaConfig } from "./config";
 export type {

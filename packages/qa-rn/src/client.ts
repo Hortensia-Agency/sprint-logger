@@ -134,10 +134,26 @@ export class SprintQaClient {
     taskId: number,
     file: { uri: string; name: string; type: string }
   ): Promise<AttachmentResponse> {
+    return this.uploadAttachment(taskId, file, "screenshot");
+  }
+
+  /** Upload a recorded voice note (kind=audio_note) to the same route. */
+  async uploadAudioNote(
+    taskId: number,
+    file: { uri: string; name: string; type: string }
+  ): Promise<AttachmentResponse> {
+    return this.uploadAttachment(taskId, file, "audio_note");
+  }
+
+  private uploadAttachment(
+    taskId: number,
+    file: { uri: string; name: string; type: string },
+    kind: "screenshot" | "audio_note"
+  ): Promise<AttachmentResponse> {
     const form = new FormData();
     // RN's FormData accepts the { uri, name, type } shape for file parts.
     form.append("file", file as unknown as Blob);
-    form.append("kind", "screenshot");
+    form.append("kind", kind);
     return this.json<AttachmentResponse>(
       `/api/widget/tasks/${taskId}/attachments`,
       { method: "POST", body: form },
