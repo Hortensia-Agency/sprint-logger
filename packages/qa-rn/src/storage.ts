@@ -35,6 +35,22 @@ try {
 
 const PAT_KEY = "sprint-qa-pat";
 const FAB_POS_KEY = "sprint-qa-fab-pos";
+const DEVICE_ID_KEY = "sprint-qa-device-id";
+
+/**
+ * A stable per-device id, generated once and persisted. Used to name per-device
+ * PATs so signing in on one device never revokes another's token.
+ */
+export async function getDeviceId(): Promise<string> {
+  const existing = await store.getItem(DEVICE_ID_KEY);
+  if (existing) return existing;
+  const id =
+    "dev_" +
+    Math.random().toString(36).slice(2) +
+    Date.now().toString(36);
+  await store.setItem(DEVICE_ID_KEY, id);
+  return id;
+}
 
 export async function loadPat(): Promise<string | null> {
   return store.getItem(PAT_KEY);

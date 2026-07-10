@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/qa-rn",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Sprint QA widget for React Native / Expo host apps — in-context bug reporting and QA queue, authed via a mobile_widget PAT.",
   "keywords": [
     "qa",
@@ -52,11 +52,15 @@
     "react-native-reanimated": ">=3.0.0",
     "react-native-view-shot": ">=3.0.0",
     "expo-av": ">=13.0.0",
+    "expo-web-browser": ">=13.0.0",
+    "expo-crypto": ">=13.0.0",
     "@react-native-async-storage/async-storage": ">=1.21.0"
   },
   "peerDependenciesMeta": {
     "react-native-view-shot": { "optional": true },
-    "expo-av": { "optional": true }
+    "expo-av": { "optional": true },
+    "expo-web-browser": { "optional": true },
+    "expo-crypto": { "optional": true }
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

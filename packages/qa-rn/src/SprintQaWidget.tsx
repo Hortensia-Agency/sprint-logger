@@ -61,6 +61,13 @@ export interface SprintQaWidgetProps {
   origin?: string;
   enabledByHost?: boolean;
   /**
+   * Deep-link URI Sprint redirects back to after OAuth sign-in (e.g.
+   * "stellify://sprint-qa"). Required to enable the "Sign in with Sprint"
+   * button; omit and the gate falls back to manual PAT paste only. Must be an
+   * app scheme allowlisted server-side.
+   */
+  redirectUri?: string;
+  /**
    * Static widget key, when known at build time. Prefer `fetchConfig` for the
    * runtime/no-rebuild kill switch. If both are given, `fetchConfig` wins.
    */
@@ -242,7 +249,15 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
   };
 
   const renderBody = () => {
-    if (!hasPat) return <PatGate onSubmit={onPatSubmit} />;
+    if (!hasPat)
+      return (
+        <PatGate
+          onSubmit={onPatSubmit}
+          origin={props.origin}
+          widgetKey={activeKey ?? ""}
+          redirectUri={props.redirectUri}
+        />
+      );
     if (screen === "detail" && taskId != null) {
       return (
         <DetailView

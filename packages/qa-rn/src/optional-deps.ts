@@ -25,3 +25,25 @@ try {
   _expoAv = null;
 }
 export const ExpoAudio = _expoAv?.Audio ?? null;
+
+// expo-web-browser drives the OAuth "Sign in with Sprint" flow. Optional —
+// absent means the sign-in button hides and only manual PAT paste is offered.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _webBrowser: any = null;
+try {
+  _webBrowser = require("expo-web-browser");
+} catch {
+  _webBrowser = null;
+}
+export const WebBrowser = _webBrowser ?? null;
+
+// expo-crypto generates the PKCE verifier/challenge. Optional peer of the OAuth
+// flow — absent (like WebBrowser) means the sign-in button hides.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _crypto: any = null;
+try {
+  _crypto = require("expo-crypto");
+} catch {
+  _crypto = null;
+}
+export const ExpoCrypto = _crypto ?? null;

@@ -51,7 +51,17 @@ export function Fab({ onPress }: { onPress: () => void }) {
     void saveFabPos({ x, y });
   }
 
+  // A pure tap barely moves the finger, so Pan alone often never activates on
+  // iOS — the FAB would look tappable but do nothing. Use an explicit Tap for
+  // the press and Pan for the drag, raced so whichever the user does wins.
+  const tap = Gesture.Tap()
+    .maxDistance(TAP_THRESHOLD * 2)
+    .onEnd(() => {
+      runOnJS(onPress)();
+    });
+
   const pan = Gesture.Pan()
+    .minDistance(TAP_THRESHOLD)
     .onStart(() => {
       startX.value = tx.value;
       startY.value = ty.value;
@@ -60,14 +70,7 @@ export function Fab({ onPress }: { onPress: () => void }) {
       tx.value = startX.value + e.translationX;
       ty.value = startY.value + e.translationY;
     })
-    .onEnd((e: { translationX: number; translationY: number }) => {
-      const moved =
-        Math.abs(e.translationX) > TAP_THRESHOLD ||
-        Math.abs(e.translationY) > TAP_THRESHOLD;
-      if (!moved) {
-        runOnJS(onPress)();
-        return;
-      }
+    .onEnd(() => {
       // Snap to the nearer vertical edge (Messenger-bubble behavior); clamp Y.
       const leftX = MARGIN;
       const rightX = width - SIZE - MARGIN;
@@ -79,12 +82,14 @@ export function Fab({ onPress }: { onPress: () => void }) {
       runOnJS(persist)(snapX, cy);
     });
 
+  const gesture = Gesture.Race(pan, tap);
+
   const style = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }],
   }));
 
   return (
-    <GestureDetector gesture={pan}>
+    <GestureDetector gesture={gesture}>
       <Animated.View style={[styles.fab, style]}>
         <View style={styles.inner}>
           <BugGlyph />
