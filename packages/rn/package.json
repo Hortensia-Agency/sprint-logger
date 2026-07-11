@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/rn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sprint Signals error logger for React Native / Expo. init() once, captures native JS crashes with iOS/Android device context. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",
@@ -49,13 +49,9 @@
   "peerDependencies": {
     "react-native": ">=0.73"
   },
-  "peerDependenciesMeta": {
-    "expo-device": {
-      "optional": true
-    },
-    "@react-native-async-storage/async-storage": {
-      "optional": true
-    }
+  "dependencies": {
+    "expo-device": ">=6.0.0",
+    "@react-native-async-storage/async-storage": ">=1.21.0"
   },
   "devDependencies": {
     "publint": "^0.2.12",

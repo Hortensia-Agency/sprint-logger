@@ -24,6 +24,9 @@
  * hostname/IP/geo); the Sprint ingest endpoint validates and rejects PII.
  */
 
+import { installDeadClickDetector } from "./dead-click-detector";
+import { installPerfObserver } from "./perf-observer";
+
 export type Severity = "low" | "medium" | "high" | "blocker";
 
 /**
@@ -56,6 +59,63 @@ export interface HttpContext {
   durationMs?: number;
 }
 
+/**
+ * Signals v2 — the non-error signal types this SDK can emit. `error` is the
+ * implicit type of capture()/captureMessage(); everything below is a "bug that
+ * doesn't throw". Mirrors the server's SignalType enum (lib/signals/context.ts)
+ * by hand — this package has no monorepo dependency, so keep them in lock-step.
+ * `custom` is what captureSignal() emits for an app-asserted invariant.
+ */
+export type SignalType =
+  | "dead_click"
+  | "rage_click"
+  | "click_intercepted"
+  | "modal_no_dismiss"
+  | "blank_render"
+  | "dead_link"
+  | "broken_navigation"
+  | "http_error"
+  | "slow_operation"
+  | "perf"
+  | "custom"
+  | "meta";
+
+/**
+ * Machine-readable evidence for a non-error signal. Only the subset a given
+ * type produces is filled. Mirrors the server's SignalEvidenceSchema.
+ */
+export interface SignalEvidence {
+  selector?: string;
+  route?: string;
+  timeAfterClickMs?: number;
+  endReason?: "timeout" | "mutation";
+  clickCount?: number;
+  http?: { method: string; path: string; status: number };
+  op?: string;
+  valueMs?: number;
+  threshold?: number;
+  reason?: string;
+}
+
+/**
+ * Input to captureSignal() — the Engine-B primary surface. The app ASSERTS a
+ * problem the SDK can't infer (a business invariant, a known dead-end). `type`
+ * is a stable low-cardinality sub-slug (e.g. "cart.empty-after-add") and is the
+ * fingerprint seed; put variable data in `context`, never the slug.
+ */
+export interface CaptureSignalInput {
+  /** Stable sub-slug — the fingerprint seed. Low-cardinality. */
+  type: string;
+  title: string;
+  severity?: Severity;
+  /** Explicit stable fingerprint slug; defaults to `type`. */
+  fingerprint?: string;
+  /** Human/display bag surfaced in the inbox evidence block. PII-free. */
+  context?: Record<string, string | number | boolean | null>;
+  route?: string;
+  userToken?: string;
+}
+
 export interface SignalsWebConfig {
   /**
    * Sprint origin. Defaults to production Sprint. Override for staging /
@@ -80,6 +140,34 @@ export interface SignalsWebConfig {
    * on init and each SPA route change (history API) sends another.
    */
   enableAnalytics?: boolean;
+  /**
+   * Signals v2 — install the absence-of-effect detector (dead/rage clicks).
+   * Default true. Set false to disable the detector entirely (the kill switch
+   * if a host-app interaction conflict surfaces). Independent of
+   * captureBreadcrumbs.
+   */
+  detectDeadClicks?: boolean;
+  /**
+   * Signals v2 — emit a `http_error` signal when the fetch/XHR instrumentation
+   * sees a handled 4xx/5xx (and 404) response, in addition to the breadcrumb.
+   * Default true. Set false to keep failed requests as breadcrumbs only.
+   */
+  captureHttpErrors?: boolean;
+  /**
+   * Signals v2 — observe cheap client perf (long-task / LCP / INP / CLS via
+   * PerformanceObserver) and emit a `perf` signal only when a metric exceeds its
+   * Core-Web-Vitals "good" threshold. Default true. Set false to disable.
+   */
+  capturePerf?: boolean;
+  /**
+   * Signals v2 — auto-CAPTURE (not just breadcrumb) every `console.error`,
+   * retroactively surfacing errors that were caught-and-logged across the host's
+   * catch blocks with zero per-catch edits. Default true (the highest-leverage
+   * lever for the "manually add capture inside catch blocks" problem). Emitted at
+   * severity `low` with per-fingerprint dedupe. On first SDK upgrade this may
+   * surface existing logs — set false (or mute the group) if that's noisy.
+   */
+  captureConsoleErrors?: boolean;
   /** Called (best-effort) if a capture POST fails. For host-side debugging. */
   onError?: (err: unknown) => void;
 }
@@ -136,10 +224,35 @@ export function init(key: string, cfg: SignalsWebConfig = {}): void {
   };
   env = buildEnv();
   void enrichFromClientHints();
+  httpErrorsEnabled = cfg.captureHttpErrors ?? true;
+  consoleErrorsEnabled = cfg.captureConsoleErrors ?? true;
   if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandlers ?? true) installHandlers();
   if (cfg.enableAnalytics) installAnalytics();
+  if (cfg.detectDeadClicks ?? true) {
+    // Feed detected dead/rage clicks into the shared non-error emit path.
+    teardownDetector = installDeadClickDetector((d) =>
+      emitSignal({ signalType: d.signalType, title: d.title, evidence: d.evidence })
+    );
+  }
+  if (cfg.capturePerf ?? true) {
+    teardownPerf = installPerfObserver((p) =>
+      emitSignal({
+        signalType: "perf",
+        title: p.title,
+        evidence: { op: p.op, valueMs: p.valueMs, threshold: p.threshold },
+      })
+    );
+  }
 }
+
+// Whether recordFailingHttp should ALSO emit an http_error signal (v2), not just
+// attach the failing request as error context. Set from config at init.
+let httpErrorsEnabled = true;
+// Whether console.error is auto-captured as an error signal (v2). Set at init.
+let consoleErrorsEnabled = true;
+let teardownDetector: (() => void) | null = null;
+let teardownPerf: (() => void) | null = null;
 
 // ---- pseudonymous token (D6) ------------------------------------------
 function loadToken(): string {
@@ -282,8 +395,30 @@ let lastHttp: { ctx: HttpContext; at: number } | null = null;
 function recordFailingHttp(ctx: HttpContext): void {
   try {
     lastHttp = { ctx, at: now() };
+    // Signals v2 — a handled 4xx/5xx (and 404) is a silent feature failure the
+    // app swallowed. Emit an http_error signal (in addition to the breadcrumb +
+    // last-failing-request context). Guarded so a request TO Sprint's own ingest
+    // can never feed back into the detector (infinite-loop guard) and so a status
+    // below 400 never emits.
+    if (
+      httpErrorsEnabled &&
+      config &&
+      typeof ctx.statusCode === "number" &&
+      ctx.statusCode >= 400 &&
+      !ctx.url.includes("/api/signals/") &&
+      !ctx.url.includes("/api/analytics/")
+    ) {
+      emitSignal({
+        signalType: "http_error",
+        title: `${ctx.method} ${ctx.url} → ${ctx.statusCode}`,
+        evidence: {
+          http: { method: ctx.method, path: ctx.url, status: ctx.statusCode },
+          valueMs: ctx.durationMs,
+        },
+      });
+    }
   } catch {
-    /* swallow */
+    /* swallow — HTTP emit must never break the wrapped request */
   }
 }
 
@@ -374,13 +509,25 @@ function installBreadcrumbs(): void {
       if (typeof orig !== "function") continue;
       console[lvl] = function (...args: unknown[]) {
         try {
+          const text = scrubCrumb(args.map(stringifyArg).join(" "));
           pushCrumb({
             category: "console",
             type: lvl,
             level: lvl === "warn" ? "warning" : "error",
-            message: scrubCrumb(args.map(stringifyArg).join(" ")),
+            message: text,
             timestamp: now(),
           });
+          // Signals v2 — auto-capture console.error as a low-severity error
+          // signal (retroactively covers swallowed-but-logged catch blocks). If
+          // the first arg is an Error, use it (real stack); else use the text.
+          if (lvl === "error" && consoleErrorsEnabled && config) {
+            const first = args[0];
+            if (first instanceof Error) {
+              report(first.message || first.name, first.stack, { severity: "low" }, true, first.name);
+            } else if (text) {
+              report(text.slice(0, 2000), undefined, { severity: "low" }, true);
+            }
+          }
         } catch {
           /* swallow */
         }
@@ -652,6 +799,126 @@ export function captureMessage(message: string, ctx: CaptureContext = {}): void 
   report(message, undefined, ctx, true);
 }
 
+/**
+ * Signals v2 — React 19 error-handler bridge. React error boundaries CATCH
+ * render errors, so those never reach window.onerror and are invisible to the
+ * global handler. Wire this ONCE at your root and every boundary-caught error is
+ * captured, with zero per-boundary code:
+ *
+ *   createRoot(el, {
+ *     onCaughtError: signalsReactErrorHandler(),
+ *     onUncaughtError: signalsReactErrorHandler(),
+ *   });
+ *
+ * Returns a handler matching React's onCaughtError/onUncaughtError signature.
+ * Fire-and-forget; never throws back into React's error path.
+ */
+export function signalsReactErrorHandler(): (
+  error: unknown,
+  info?: { componentStack?: string }
+) => void {
+  return (error, info) => {
+    try {
+      if (!config) return;
+      const { message, stack, errorType } = normalizeError(error);
+      // Prefer the real stack; fall back to React's componentStack for context.
+      report(message, stack ?? info?.componentStack, {}, true, errorType);
+    } catch {
+      /* never throw into React's error handling */
+    }
+  };
+}
+
+/**
+ * Signals v2 · Engine B — assert an app-level problem the SDK can't infer.
+ * Fire-and-forget; never throws. Emits a `custom` signal whose fingerprint is
+ * seeded by `type` (or an explicit `fingerprint`), so repeated assertions of the
+ * same invariant collapse into one inbox group.
+ *
+ *   captureSignal({ type: "cart.empty-after-add", title: "Cart empty after add",
+ *                   severity: "high", context: { sku } });
+ */
+export function captureSignal(input: CaptureSignalInput): void {
+  if (!config || !input?.type || !input?.title) return;
+  emitSignal({
+    signalType: "custom",
+    type: input.type.slice(0, 200),
+    title: input.title.slice(0, 500),
+    fingerprint: input.fingerprint?.slice(0, 200),
+    severity: input.severity,
+    context: input.context,
+    userToken: input.userToken ?? config.userToken,
+    route: input.route ?? route(),
+  });
+}
+
+/**
+ * The shared non-error emit path (Engine A detectors + captureSignal). Builds a
+ * v2 body, attaches the same enrichment the error path carries (release, env,
+ * breadcrumbs), and POSTs. Internal — detectors in this package call it; hosts
+ * use captureSignal(). Fire-and-forget.
+ */
+function emitSignal(body: {
+  signalType: SignalType;
+  title?: string;
+  type?: string;
+  fingerprint?: string;
+  evidence?: SignalEvidence;
+  severity?: Severity;
+  context?: Record<string, string | number | boolean | null>;
+  userToken?: string;
+  route?: string;
+}): void {
+  if (!config) return;
+  void post({
+    signalType: body.signalType,
+    type: body.type,
+    title: body.title,
+    fingerprint: body.fingerprint,
+    evidence: body.evidence,
+    severity: body.severity,
+    context: body.context,
+    userToken: body.userToken ?? config.userToken,
+    route: body.route ?? route(),
+    release: config.release,
+    breadcrumbs: getBreadcrumbs().length ? getBreadcrumbs() : undefined,
+    occurredAt: new Date().toISOString(),
+    // Non-error signals are always "handled" (they didn't crash anything).
+    env: envFor(true),
+  });
+}
+
+/**
+ * Signals v2 · perf — time an operation and emit a `slow_operation` signal if it
+ * exceeds `thresholdMs`. Returns a handle; call finish() when the op completes.
+ * Under threshold → nothing is emitted (no quota burn on the happy path). This
+ * is the client-side "a function took too long" primitive.
+ *
+ *   const span = startSpan("checkout.submit", 1000);
+ *   await submit(); span.finish();
+ */
+export function startSpan(
+  op: string,
+  thresholdMs = 1000
+): { finish: (extra?: Record<string, string | number | boolean | null>) => void } {
+  const started = now();
+  let done = false;
+  return {
+    finish(extra) {
+      if (done || !config) return;
+      done = true;
+      const valueMs = Math.max(0, Math.round(now() - started));
+      if (valueMs < thresholdMs) return; // fast path — no signal
+      emitSignal({
+        signalType: "slow_operation",
+        title: `${op} took ${valueMs}ms`,
+        evidence: { op: op.slice(0, 256), valueMs, threshold: thresholdMs },
+        context: extra,
+      });
+    },
+  };
+}
+
 function report(
   message: string,
   stack: string | undefined,
@@ -854,6 +1121,16 @@ export function _reset(): void {
   lastHttp = null;
   analyticsInstalled = false;
   lastAnalyticsPath = null;
+  httpErrorsEnabled = true;
+  consoleErrorsEnabled = true;
+  try {
+    teardownDetector?.();
+    teardownPerf?.();
+  } catch {
+    /* best-effort */
+  }
+  teardownDetector = null;
+  teardownPerf = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */

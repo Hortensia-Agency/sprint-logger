@@ -484,6 +484,196 @@ export async function captureMessage(
   return captureException(new Error(message), ctx);
 }
 
+/**
+ * Signals v2 — Next.js App Router server-error bridge. Export this ONE line from
+ * instrumentation.ts to auto-capture errors thrown in Server Components, Route
+ * Handlers, middleware, and Server Actions (which never reach a client handler):
+ *
+ *   // instrumentation.ts
+ *   export const onRequestError = captureRequestError;
+ *
+ * Matches Next's onRequestError signature. Fire-and-forget; never rethrows.
+ */
+export async function captureRequestError(
+  error: unknown,
+  request?: { path?: string; method?: string },
+  context?: { routerKind?: string; routePath?: string }
+): Promise<void> {
+  try {
+    if (!config) return;
+    await capture(
+      error,
+      {
+        route: request?.path ?? context?.routePath,
+        // Server-error = uncaught from the app's perspective.
+      },
+      false
+    );
+  } catch {
+    /* never rethrow into Next's error pipeline */
+  }
+}
+
+// ---- Signals v2 (non-error signals) -----------------------------------
+//
+// The Node counterpart to the web SDK's captureSignal()/startSpan(). Mirrors
+// the server's SignalType/SignalEvidence (lib/signals/context.ts) by hand — no
+// monorepo dependency. On a server the primary v2 use is Engine B
+// (captureSignal for a violated invariant) and server perf (startSpan around a
+// slow endpoint/query). Fire-and-forget; never rejects.
+
+export type SignalType =
+  | "http_error"
+  | "slow_operation"
+  | "perf"
+  | "custom"
+  | "meta";
+
+export interface SignalEvidence {
+  http?: { method: string; path: string; status: number };
+  op?: string;
+  valueMs?: number;
+  threshold?: number;
+  reason?: string;
+}
+
+export interface CaptureSignalInput {
+  /** Stable sub-slug — the fingerprint seed. Low-cardinality. */
+  type: string;
+  title: string;
+  severity?: Severity;
+  fingerprint?: string;
+  context?: Record<string, string | number | boolean | null>;
+  route?: string;
+  userToken?: string;
+}
+
+/**
+ * Assert an app-level problem the SDK can't infer (a violated business
+ * invariant). Emits a `custom` signal; fingerprint seeded by `type`.
+ */
+export async function captureSignal(input: CaptureSignalInput): Promise<void> {
+  if (!config || !input?.type || !input?.title) return;
+  return emitSignal({
+    signalType: "custom",
+    type: input.type.slice(0, 200),
+    title: input.title.slice(0, 500),
+    fingerprint: input.fingerprint?.slice(0, 200),
+    severity: input.severity,
+    context: input.context,
+    userToken: input.userToken,
+    route: input.route,
+  });
+}
+
+// Shared non-error emit path. Fire-and-forget.
+async function emitSignal(body: {
+  signalType: SignalType;
+  title?: string;
+  type?: string;
+  fingerprint?: string;
+  evidence?: SignalEvidence;
+  severity?: Severity;
+  context?: Record<string, string | number | boolean | null>;
+  userToken?: string;
+  route?: string;
+}): Promise<void> {
+  if (!config) return;
+  const trail = getBreadcrumbs();
+  await post({
+    signalType: body.signalType,
+    type: body.type,
+    title: body.title,
+    fingerprint: body.fingerprint,
+    evidence: body.evidence,
+    severity: body.severity,
+    context: body.context,
+    userToken: body.userToken,
+    route: body.route,
+    release: config.release,
+    breadcrumbs: trail.length ? trail : undefined,
+    occurredAt: new Date().toISOString(),
+    env: { ...config.env, handled: true },
+  });
+}
+
+/**
+ * Time a server operation; emit a `slow_operation` signal if it exceeds
+ * `thresholdMs`. Under threshold → nothing emitted. The "this endpoint/query is
+ * too slow" primitive. finish() is fire-and-forget (returns void, not a Promise,
+ * so it drops cleanly into a finally block).
+ */
+export function startSpan(
+  op: string,
+  thresholdMs = 1000
+): { finish: (extra?: Record<string, string | number | boolean | null>) => void } {
+  const started = Date.now();
+  let done = false;
+  return {
+    finish(extra) {
+      if (done || !config) return;
+      done = true;
+      const valueMs = Math.max(0, Date.now() - started);
+      if (valueMs < thresholdMs) return;
+      void emitSignal({
+        signalType: "slow_operation",
+        title: `${op} took ${valueMs}ms`,
+        evidence: { op: op.slice(0, 256), valueMs, threshold: thresholdMs },
+        context: extra,
+      });
+    },
+  };
+}
+
+/**
+ * N+1 query detector for one request/unit of work. The host calls query(key)
+ * once per DB call with a NORMALIZED query shape as the key (e.g.
+ * "SELECT * FROM users WHERE id = ?"); on finish(), any shape seen more than
+ * `threshold` times in the same request emits a `perf` signal — the classic
+ * "N sequential identical queries that should have been one" bug the user asked
+ * to catch. Per-request state; call once per request. Never throws.
+ *
+ *   const q = trackNPlusOne(route);
+ *   for (const row of rows) { q.query("SELECT ... WHERE id = ?"); await load(row.id); }
+ *   q.finish(); // if the same shape ran > threshold times → a perf signal
+ */
+export function trackNPlusOne(
+  route: string,
+  threshold = 10
+): { query: (shape: string) => void; finish: () => void } {
+  const counts = new Map<string, number>();
+  let done = false;
+  return {
+    query(shape: string) {
+      try {
+        const k = shape.slice(0, 256);
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      } catch {
+        /* swallow */
+      }
+    },
+    finish() {
+      if (done || !config) return;
+      done = true;
+      try {
+        for (const [shape, n] of counts) {
+          if (n > threshold) {
+            void emitSignal({
+              signalType: "perf",
+              title: `N+1: ${n}× ${shape} in ${route}`,
+              // op = route + shape so all N+1 of the same shape on a route group.
+              evidence: { op: `n+1:${route}:${shape}`.slice(0, 256), valueMs: n, threshold },
+              context: { route: route.slice(0, 256), count: n },
+            });
+          }
+        }
+      } catch {
+        /* swallow */
+      }
+    },
+  };
+}
+
 async function post(body: Record<string, unknown>): Promise<void> {
   if (!config) return;
   try {

@@ -10,19 +10,26 @@
  * userToken is a random opaque id (AsyncStorage), never PII. Capture is
  * fire-and-forget and never throws into the host app.
  *
- * AsyncStorage is an optional peer dependency — if absent, the token is
- * per-session (in-memory) so affected-user counts degrade gracefully rather
- * than crash a host that didn't install it.
+ * Peers: `react-native` is a required peer (it IS the host). `expo-device` and
+ * `@react-native-async-storage/async-storage` are DECLARED DEPENDENCIES (not
+ * optional) — they must be statically imported so Metro resolves them into the
+ * host graph (a runtime require() gets bundled into a dynamic-require shim Metro
+ * can't resolve, crashing the host at launch). Usage stays guarded so a native
+ * module that throws at call time degrades gracefully instead of crashing.
  */
 
-// Metro/RN provide `require` at runtime; declare it for the typecheck so we
-// don't have to pull @types/node into a React Native package.
-declare const require: (id: string) => { default: AsyncStorageLike };
+import { installDeadTapDetection } from "./dead-tap";
 
-interface AsyncStorageLike {
-  getItem(k: string): Promise<string | null>;
-  setItem(k: string, v: string): Promise<void>;
-}
+// Static imports (NOT runtime require) so Metro resolves them in the host's
+// bundle graph. esbuild rewrites a bundled `require("react-native")` into a
+// dynamic-require Proxy shim that Metro cannot statically resolve, which crashes
+// the host at launch (`Requiring unknown module "react-native"`). react-native
+// is always present (it IS the host); expo-device and AsyncStorage are declared
+// dependencies of this package, so all three resolve. Usage is still guarded so
+// a native module that throws at call time degrades instead of crashing.
+import { Platform } from "react-native";
+import * as Device from "expo-device";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type Severity = "low" | "medium" | "high" | "blocker";
 
@@ -74,6 +81,26 @@ export interface SignalsRnConfig {
    * gesture or router). Default true. Set false to disable all instrumentation.
    */
   captureBreadcrumbs?: boolean;
+  /**
+   * Signals v2 — enable dead-tap detection by auto-patching the RN touch
+   * primitives passed here. This is the native analog of the web dead-click
+   * detector. Zero per-button work: pass your RN module's touch components ONCE
+   * and every <Pressable>/<TouchableOpacity>/… in the app is instrumented.
+   *
+   * Behind a flag because it monkey-patches RN internals (D-5, the plan's
+   * highest-risk item) — a patch that fails degrades to "no dead-tap", never a
+   * host crash. Omit to disable entirely. Usage: bring Pressable/TouchableOpacity
+   * in from react-native and pass them as
+   * `init({ key, deadTap: { components: { Pressable, TouchableOpacity } } })`.
+   *
+   * `enabled` lets the host wire it to a runtime-config kill switch (fetched
+   * from its own backend) so the detector can be turned off WITHOUT an EAS
+   * rebuild — the same posture as the QA widget's runtime kill switch.
+   */
+  deadTap?: {
+    components: Record<string, unknown>;
+    enabled?: boolean;
+  };
   onError?: (err: unknown) => void;
 }
 
@@ -117,30 +144,16 @@ let config: Resolved | null = null;
 function collectRnEnv(): Record<string, unknown> {
   const env: Record<string, unknown> = {};
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const RN = require("react-native") as unknown as {
-      Platform?: {
-        OS?: string;
-        Version?: string | number;
-        constants?: { Release?: string; reactNativeVersion?: unknown };
-      };
-    };
-    const P = RN.Platform;
-    if (P?.OS === "ios" || P?.OS === "android") env.platform = P.OS;
-    if (P?.OS) env.osName = P.OS === "ios" ? "iOS" : "Android";
-    if (P?.Version != null) env.osVersion = String(P.Version);
+    if (Platform?.OS === "ios" || Platform?.OS === "android") env.platform = Platform.OS;
+    if (Platform?.OS) env.osName = Platform.OS === "ios" ? "iOS" : "Android";
+    if (Platform?.Version != null) env.osVersion = String(Platform.Version);
   } catch {
-    /* react-native unexpectedly absent — leave platform undefined */
+    /* Platform unexpectedly unusable — leave platform undefined */
   }
-  // expo-device (optional) for the device model + app version.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Device = require("expo-device") as {
-      modelName?: string | null;
-    };
     if (Device?.modelName) env.deviceModel = Device.modelName;
   } catch {
-    /* no expo-device — skip deviceModel */
+    /* expo-device native module unavailable — skip deviceModel */
   }
   try {
     env.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -152,11 +165,11 @@ function collectRnEnv(): Record<string, unknown> {
   return env;
 }
 
-// AsyncStorage is optional — require lazily so a host without it still loads.
+// AsyncStorage persists the pseudonymous token across launches. Usage is
+// guarded: if the native module misbehaves the token degrades to per-session
+// (in-memory) rather than crashing capture.
 async function loadToken(): Promise<string> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const AsyncStorage = require("@react-native-async-storage/async-storage").default;
     const existing = await AsyncStorage.getItem(TOKEN_KEY);
     if (existing) return existing;
     const fresh = "anon_" + randHex();
@@ -299,6 +312,9 @@ export function addBreadcrumb(c: Breadcrumb): void {
 export function navigationBreadcrumb(routeName: string | undefined): void {
   if (!routeName) return;
   addBreadcrumb({ category: "navigation", level: "info", message: routeName });
+  // Also track it as the current route so dead-tap / captureSignal evidence can
+  // carry the screen (RN has no location.pathname).
+  setRoute(routeName);
 }
 
 function installBreadcrumbs(): void {
@@ -420,6 +436,30 @@ export async function init(cfg: SignalsRnConfig): Promise<void> {
   };
   if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandler ?? true) installHandler();
+  // Signals v2 dead-tap (D-5) — only when the host passed touch components AND
+  // the runtime flag is on (default on when the block is present). Wrapped so a
+  // patch failure degrades to no-op.
+  if (cfg.deadTap && (cfg.deadTap.enabled ?? true) && cfg.deadTap.components) {
+    try {
+      teardownDeadTap = installDeadTapDetection(
+        cfg.deadTap.components,
+        (d) => void emitSignal({ signalType: d.signalType, title: d.title, evidence: d.evidence }),
+        () => currentRoute
+      );
+    } catch (e) {
+      cfg.onError?.(e);
+    }
+  }
+}
+
+// The host's current route, fed via navigationBreadcrumb / setRoute so dead-tap
+// evidence can carry it (RN has no location.pathname).
+let currentRoute: string | undefined;
+let teardownDeadTap: (() => void) | null = null;
+
+/** Tell the SDK the current screen (for dead-tap route evidence). */
+export function setRoute(route: string | undefined): void {
+  currentRoute = route ? String(route).slice(0, 512) : undefined;
 }
 
 function installHandler(): void {
@@ -493,6 +533,128 @@ export async function captureMessage(
   return captureException(new Error(message), ctx);
 }
 
+// ---- Signals v2 (non-error signals) -----------------------------------
+//
+// RN counterpart to captureSignal()/startSpan(). Mirrors the server's
+// SignalType/SignalEvidence by hand. On native the v2 surface is Engine B
+// (captureSignal for an invariant), perf (startSpan), and — via the Step-4
+// auto-patch of Pressable/Touchable — dead_tap, which calls emitSignal()
+// internally. Fire-and-forget; never rejects.
+
+export type SignalType =
+  | "dead_tap"
+  | "http_error"
+  | "broken_navigation"
+  | "slow_operation"
+  | "perf"
+  | "custom"
+  | "meta";
+
+export interface SignalEvidence {
+  selector?: string;
+  route?: string;
+  timeAfterClickMs?: number;
+  endReason?: "timeout" | "mutation";
+  clickCount?: number;
+  http?: { method: string; path: string; status: number };
+  op?: string;
+  valueMs?: number;
+  threshold?: number;
+  reason?: string;
+}
+
+export interface CaptureSignalInput {
+  /** Stable sub-slug — the fingerprint seed. Low-cardinality. */
+  type: string;
+  title: string;
+  severity?: Severity;
+  fingerprint?: string;
+  context?: Record<string, string | number | boolean | null>;
+  route?: string;
+  userToken?: string;
+}
+
+/**
+ * Assert an app-level problem the SDK can't infer. Emits a `custom` signal;
+ * fingerprint seeded by `type`. Fire-and-forget.
+ */
+export async function captureSignal(input: CaptureSignalInput): Promise<void> {
+  if (!config || !input?.type || !input?.title) return;
+  return emitSignal({
+    signalType: "custom",
+    type: input.type.slice(0, 200),
+    title: input.title.slice(0, 500),
+    fingerprint: input.fingerprint?.slice(0, 200),
+    severity: input.severity,
+    context: input.context,
+    userToken: input.userToken ?? config.userToken,
+    route: input.route,
+  });
+}
+
+// Shared non-error emit path (captureSignal + the dead_tap auto-patch).
+// Exported for the Step-4 tap instrumentation in this package; hosts use
+// captureSignal(). The `dead_tap` mapping to the server's dead_click family is
+// applied here so the wire matches the server contract.
+export async function emitSignal(body: {
+  signalType: SignalType;
+  title?: string;
+  type?: string;
+  fingerprint?: string;
+  evidence?: SignalEvidence;
+  severity?: Severity;
+  context?: Record<string, string | number | boolean | null>;
+  userToken?: string;
+  route?: string;
+}): Promise<void> {
+  if (!config) return;
+  const trail = getBreadcrumbs();
+  // Native taps map onto the server's dead_click type (there is no separate
+  // 'dead_tap' server enum member — the platform is carried in env).
+  const wireType = body.signalType === "dead_tap" ? "dead_click" : body.signalType;
+  await post({
+    signalType: wireType,
+    type: body.type,
+    title: body.title,
+    fingerprint: body.fingerprint,
+    evidence: body.evidence,
+    severity: body.severity,
+    context: body.context,
+    userToken: body.userToken ?? config.userToken,
+    route: body.route,
+    release: config.release,
+    breadcrumbs: trail.length ? trail : undefined,
+    occurredAt: new Date().toISOString(),
+    env: { ...config.env, handled: true },
+  });
+}
+
+/**
+ * Time an operation; emit a `slow_operation` signal if it exceeds thresholdMs.
+ * Under threshold → nothing emitted.
+ */
+export function startSpan(
+  op: string,
+  thresholdMs = 1000
+): { finish: (extra?: Record<string, string | number | boolean | null>) => void } {
+  const started = Date.now();
+  let done = false;
+  return {
+    finish(extra) {
+      if (done || !config) return;
+      done = true;
+      const valueMs = Math.max(0, Date.now() - started);
+      if (valueMs < thresholdMs) return;
+      void emitSignal({
+        signalType: "slow_operation",
+        title: `${op} took ${valueMs}ms`,
+        evidence: { op: op.slice(0, 256), valueMs, threshold: thresholdMs },
+        context: extra,
+      });
+    },
+  };
+}
+
 async function post(body: Record<string, unknown>): Promise<void> {
   if (!config) return;
   try {
@@ -517,6 +679,13 @@ export function _reset(): void {
   crumbs.length = 0;
   lastHttp = null;
   analyticsSessionToken = null;
+  currentRoute = undefined;
+  try {
+    teardownDeadTap?.();
+  } catch {
+    /* best-effort */
+  }
+  teardownDeadTap = null;
 }
 
 /** Test-only: read the current breadcrumb buffer. */
