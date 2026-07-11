@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/node",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sprint Signals error logger for Node services. init() once at boot, captureException() around boundaries. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",

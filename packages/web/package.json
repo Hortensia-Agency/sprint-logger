@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sprint Signals error logger for browser apps (Next.js, Vite, CRA, Astro). Import { init, capture } and call init(key) once — no script tag. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",
