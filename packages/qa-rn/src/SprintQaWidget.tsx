@@ -39,6 +39,7 @@ import { makeAudioRecorder, type AudioRecorder } from "./audio";
 import { QueueView } from "./ui/QueueView";
 import { DetailView } from "./ui/DetailView";
 import { PatGate } from "./ui/PatGate";
+import type { OAuthDeps } from "./oauth";
 import { SprintQaClient } from "./client";
 import { hostMatches, passesL0, isPatShape, resolveHostKey } from "./config";
 import { loadPat, savePat } from "./storage";
@@ -67,6 +68,14 @@ export interface SprintQaWidgetProps {
    * app scheme allowlisted server-side.
    */
   redirectUri?: string;
+  /**
+   * Host-resolved OAuth native modules: `{ WebBrowser, ExpoCrypto }`. Pass these
+   * when the SDK can't resolve `expo-web-browser` / `expo-crypto` itself — under
+   * strict pnpm the SDK's own require may miss host peers even though the host
+   * resolves them fine. Injected deps win over the SDK's internal require.
+   * Omit if the SDK resolves them on its own.
+   */
+  oauthDeps?: OAuthDeps;
   /**
    * Static widget key, when known at build time. Prefer `fetchConfig` for the
    * runtime/no-rebuild kill switch. If both are given, `fetchConfig` wins.
@@ -256,6 +265,7 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
           origin={props.origin}
           widgetKey={activeKey ?? ""}
           redirectUri={props.redirectUri}
+          oauthDeps={props.oauthDeps}
         />
       );
     if (screen === "detail" && taskId != null) {

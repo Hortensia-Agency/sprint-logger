@@ -10,7 +10,7 @@ import {
 import { theme } from "./theme";
 import { isPatShape, resolveOrigin } from "../config";
 import { getDeviceId } from "../storage";
-import { oauthAvailable, signInWithSprint } from "../oauth";
+import { isOAuthAvailable, signInWithSprint, type OAuthDeps } from "../oauth";
 
 /**
  * L3 gate — shown when no valid mobile_widget PAT is stored. Primary path is
@@ -23,18 +23,20 @@ export function PatGate({
   origin,
   widgetKey,
   redirectUri,
+  oauthDeps,
 }: {
   onSubmit: (pat: string) => void;
   origin?: string;
   widgetKey: string;
   redirectUri?: string;
+  oauthDeps?: OAuthDeps;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const valid = isPatShape(value.trim());
 
-  const canOAuth = oauthAvailable && Boolean(redirectUri);
+  const canOAuth = isOAuthAvailable(oauthDeps) && Boolean(redirectUri);
 
   async function doOAuth() {
     if (!redirectUri) return;
@@ -47,6 +49,7 @@ export function PatGate({
         widgetKey,
         redirectUri,
         deviceId: device,
+        deps: oauthDeps,
       });
       if (res.ok) {
         onSubmit(res.token);

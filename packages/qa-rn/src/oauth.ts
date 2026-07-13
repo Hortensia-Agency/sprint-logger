@@ -12,13 +12,37 @@
  *   4. POST { code, verifier } to `/exchange`; Sprint verifies PKCE and returns
  *      the per-device mobile_widget PAT. We never receive the token in a URL.
  *
- * Requires the optional peers expo-web-browser + expo-crypto. `oauthAvailable`
- * is false when either is missing (the sign-in button then hides).
+ * expo-web-browser + expo-crypto are needed. The SDK first tries to `require`
+ * them itself (works when they're hoisted next to the SDK), but under strict
+ * pnpm the SDK's own resolution can miss host-installed peers even though the
+ * HOST can resolve them. So the host may INJECT the two modules via the widget's
+ * `oauthDeps` prop; injected deps win over the SDK's own require.
  */
 
-import { WebBrowser, ExpoCrypto } from "./optional-deps";
+import { WebBrowser as RequiredWebBrowser, ExpoCrypto as RequiredCrypto } from "./optional-deps";
 
-export const oauthAvailable = Boolean(WebBrowser && ExpoCrypto);
+/** The two host-provided native modules the OAuth flow needs. */
+export interface OAuthDeps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  WebBrowser?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ExpoCrypto?: any;
+}
+
+/** Resolve deps: injected first (host resolved them), else the SDK's own require. */
+function resolveDeps(injected?: OAuthDeps): { wb: any; cr: any } | null {
+  const wb = injected?.WebBrowser ?? RequiredWebBrowser;
+  const cr = injected?.ExpoCrypto ?? RequiredCrypto;
+  if (wb?.openAuthSessionAsync && cr?.getRandomBytes && cr?.digestStringAsync) {
+    return { wb, cr };
+  }
+  return null;
+}
+
+/** Is OAuth usable — with the given injected deps, or the SDK's own require. */
+export function isOAuthAvailable(injected?: OAuthDeps): boolean {
+  return resolveDeps(injected) !== null;
+}
 
 export type OAuthResult =
   | { ok: true; token: string }
@@ -31,13 +55,14 @@ const b64url = (bytes: Uint8Array): string => {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
-async function makePkce(): Promise<{ verifier: string; challenge: string }> {
-  const raw: Uint8Array = ExpoCrypto.getRandomBytes(32);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function makePkce(cr: any): Promise<{ verifier: string; challenge: string }> {
+  const raw: Uint8Array = cr.getRandomBytes(32);
   const verifier = b64url(raw);
-  const digestHex: string = await ExpoCrypto.digestStringAsync(
-    ExpoCrypto.CryptoDigestAlgorithm.SHA256,
+  const digestHex: string = await cr.digestStringAsync(
+    cr.CryptoDigestAlgorithm.SHA256,
     verifier,
-    { encoding: ExpoCrypto.CryptoEncoding.HEX }
+    { encoding: cr.CryptoEncoding.HEX }
   );
   // Convert hex digest → bytes → base64url, matching Node's
   // createHash("sha256").update(verifier).digest("base64url") on the server.
@@ -58,10 +83,13 @@ export async function signInWithSprint(opts: {
   widgetKey: string;
   redirectUri: string;
   deviceId: string;
+  deps?: OAuthDeps;
 }): Promise<OAuthResult> {
-  if (!oauthAvailable) return { ok: false, error: "oauth_unavailable" };
+  const resolved = resolveDeps(opts.deps);
+  if (!resolved) return { ok: false, error: "oauth_unavailable" };
+  const { wb, cr } = resolved;
 
-  const { verifier, challenge } = await makePkce();
+  const { verifier, challenge } = await makePkce(cr);
   const startUrl =
     `${opts.origin}/api/widget/mobile-auth/start` +
     `?key=${encodeURIComponent(opts.widgetKey)}` +
@@ -69,7 +97,7 @@ export async function signInWithSprint(opts: {
     `&device=${encodeURIComponent(opts.deviceId)}` +
     `&challenge=${encodeURIComponent(challenge)}`;
 
-  const result = await WebBrowser.openAuthSessionAsync(startUrl, opts.redirectUri);
+  const result = await wb.openAuthSessionAsync(startUrl, opts.redirectUri);
   if (result.type !== "success" || !result.url) {
     return { ok: false, error: result.type === "cancel" ? "cancelled" : "dismissed" };
   }
