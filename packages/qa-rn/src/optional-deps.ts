@@ -47,3 +47,33 @@ try {
   _crypto = null;
 }
 export const ExpoCrypto = _crypto ?? null;
+
+// expo-image-picker selects an OS-recorded demo video from the library.
+// Optional — absent means the "Attach video" control never appears.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _imagePicker: any = null;
+try {
+  _imagePicker = require("expo-image-picker");
+} catch {
+  _imagePicker = null;
+}
+export const ImagePicker = _imagePicker ?? null;
+
+// expo-file-system streams the video PUT from disk (uploadAsync
+// BINARY_CONTENT) — fetch+blob would buffer the whole clip in the JS heap and
+// OOM the host on big files, so video attach REQUIRES this dep (E7).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _fileSystem: any = null;
+try {
+  _fileSystem = require("expo-file-system/legacy");
+} catch {
+  try {
+    _fileSystem = require("expo-file-system");
+  } catch {
+    _fileSystem = null;
+  }
+}
+export const FileSystem =
+  _fileSystem && typeof _fileSystem.uploadAsync === "function"
+    ? _fileSystem
+    : null;

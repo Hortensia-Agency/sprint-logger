@@ -81,3 +81,9 @@ export interface AttachmentResponse {
   sizeBytes: number;
   mimeType: string;
 }
+
+/** POST /api/widget/uploads/presign response — demo-video direct upload. */
+export interface PresignResponse {
+  uploadUrl: string;
+  objectKey: string;
+}

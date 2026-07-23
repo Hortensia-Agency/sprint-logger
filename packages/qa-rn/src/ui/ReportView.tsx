@@ -12,6 +12,12 @@ import { buildContext, type HostContext } from "../context";
 import type { SprintQaClient } from "../client";
 import type { Severity } from "../contract";
 import type { AudioRecorder, AudioPart } from "../audio";
+import {
+  pickDemoVideo,
+  uploadDemoVideo,
+  videoAttachAvailable,
+  type VideoPart,
+} from "../video";
 
 const SEVERITIES: Severity[] = ["low", "medium", "high", "blocker"];
 const AUDIO_MAX_SECONDS = 120; // 2-minute soft cap
@@ -45,8 +51,12 @@ export function ReportView({
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
   const [audio, setAudio] = useState<AudioPart | null>(null);
+  const [video, setVideo] = useState<VideoPart | null>(null);
   const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const recCap = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set once the report itself lands, so a retry after a failed video upload
+  // never files the bug twice — it only re-attempts the video.
+  const reportedId = useRef<number | null>(null);
 
   const clearRecTimers = () => {
     if (recTimer.current) clearInterval(recTimer.current);
@@ -87,6 +97,16 @@ export function ReportView({
 
   useEffect(() => () => clearRecTimers(), []);
 
+  async function pickVideo() {
+    setError(null);
+    try {
+      const part = await pickDemoVideo();
+      if (part) setVideo(part);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't pick that video.");
+    }
+  }
+
   async function submit() {
     if (!title.trim()) {
       setError("Title is required");
@@ -95,31 +115,50 @@ export function ReportView({
     setSubmitting(true);
     setError(null);
     try {
-      const body = buildContext(
-        {
-          title: title.trim(),
-          description: description.trim() || undefined,
-          severity,
-        },
-        getContext?.()
-      );
-      // Flush an in-progress recording before filing so it isn't lost.
-      const voiceNote = recording ? await stopRecording() : audio;
-      const res = await client.report(body);
-      if (withShot && captureScreenshot) {
-        const shot = await captureScreenshot();
-        if (shot) {
-          await client.uploadScreenshot(res.bugTaskId, shot).catch(() => {
-            /* report already filed; screenshot is best-effort */
+      let bugTaskId = reportedId.current;
+      if (bugTaskId === null) {
+        const body = buildContext(
+          {
+            title: title.trim(),
+            description: description.trim() || undefined,
+            severity,
+          },
+          getContext?.()
+        );
+        // Flush an in-progress recording before filing so it isn't lost.
+        const voiceNote = recording ? await stopRecording() : audio;
+        const res = await client.report(body);
+        bugTaskId = res.bugTaskId;
+        reportedId.current = bugTaskId;
+        if (withShot && captureScreenshot) {
+          const shot = await captureScreenshot();
+          if (shot) {
+            await client.uploadScreenshot(bugTaskId, shot).catch(() => {
+              /* report already filed; screenshot is best-effort */
+            });
+          }
+        }
+        if (voiceNote) {
+          await client.uploadAudioNote(bugTaskId, voiceNote).catch(() => {
+            /* report already filed; voice note is best-effort */
           });
         }
       }
-      if (voiceNote) {
-        await client.uploadAudioNote(res.bugTaskId, voiceNote).catch(() => {
-          /* report already filed; voice note is best-effort */
-        });
+      // The demo video is awaited, not best-effort: a failed 150 MB upload
+      // must be visible + retryable (Retry re-enters here and skips re-filing).
+      if (video) {
+        try {
+          await uploadDemoVideo(client, bugTaskId, video);
+        } catch (e) {
+          setError(
+            (e instanceof Error ? e.message : "Video upload failed.") +
+              " Your bug IS filed — tap File bug to retry the video."
+          );
+          return;
+        }
       }
-      onReported(res.bugTaskId);
+      reportedId.current = null;
+      onReported(bugTaskId);
     } catch {
       setError("Couldn't file the report. Check your token and try again.");
     } finally {
@@ -198,6 +237,27 @@ export function ReportView({
             <View style={styles.audioRow}>
               <Text style={styles.audioLabel}>🎙 Voice note attached</Text>
               <Pressable onPress={() => setAudio(null)}>
+                <Text style={styles.audioRemove}>Remove</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
+
+      {videoAttachAvailable() && (
+        <View>
+          <Text style={styles.label}>Demo video</Text>
+          <Pressable style={styles.recBtn} onPress={() => void pickVideo()}>
+            <Text style={styles.recText}>
+              {video ? "🎬 Pick a different video" : "🎬 Attach video"}
+            </Text>
+          </Pressable>
+          {video && (
+            <View style={styles.audioRow}>
+              <Text style={styles.audioLabel} numberOfLines={1}>
+                🎬 {video.name} · {(video.sizeBytes / 1024 / 1024).toFixed(1)} MB
+              </Text>
+              <Pressable onPress={() => setVideo(null)}>
                 <Text style={styles.audioRemove}>Remove</Text>
               </Pressable>
             </View>

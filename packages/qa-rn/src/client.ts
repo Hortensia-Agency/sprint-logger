@@ -21,6 +21,7 @@ import type {
   ReportInput,
   ReportResponse,
   AttachmentResponse,
+  PresignResponse,
 } from "./contract";
 
 export class SprintQaError extends Error {
@@ -143,6 +144,53 @@ export class SprintQaClient {
     file: { uri: string; name: string; type: string }
   ): Promise<AttachmentResponse> {
     return this.uploadAttachment(taskId, file, "audio_note");
+  }
+
+  /**
+   * Mint a presigned PUT URL for a demo video. The BYTES then go straight to
+   * storage — never through this client. Use FileSystem.uploadAsync
+   * (BINARY_CONTENT) for the PUT (see video.ts); fetch+blob is forbidden in
+   * that path — it buffers the whole clip in the JS heap (E7).
+   */
+  presignDemoVideo(
+    taskId: number,
+    file: { name: string; type: string; sizeBytes: number }
+  ): Promise<PresignResponse> {
+    return this.json<PresignResponse>(
+      "/api/widget/uploads/presign",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId,
+          filename: file.name,
+          contentType: file.type,
+          sizeBytes: file.sizeBytes,
+        }),
+      },
+      true
+    );
+  }
+
+  /** JSON record step after the direct PUT — the server HEAD-verifies size. */
+  recordDemoVideo(
+    taskId: number,
+    body: {
+      objectKey: string;
+      filename: string;
+      mimeType: string;
+      durationSec?: number;
+    }
+  ): Promise<AttachmentResponse> {
+    return this.json<AttachmentResponse>(
+      `/api/widget/tasks/${taskId}/attachments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, kind: "demo_video" }),
+      },
+      true
+    );
   }
 
   private uploadAttachment(

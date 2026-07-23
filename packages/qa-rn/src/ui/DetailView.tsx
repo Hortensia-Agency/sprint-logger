@@ -11,6 +11,11 @@ import {
 import { theme } from "./theme";
 import type { SprintQaClient } from "../client";
 import { ExpoAudio } from "../optional-deps";
+import {
+  pickDemoVideo,
+  uploadDemoVideo,
+  videoAttachAvailable,
+} from "../video";
 
 interface AudioNote {
   id: number;
@@ -23,6 +28,7 @@ interface TaskDetail {
   task: { id: number; title: string; state: string; description: string | null };
   activeVerifiedCount: number;
   audioNotes?: AudioNote[];
+  demoVideos?: { id: number; filename: string }[];
 }
 
 export function DetailView({
@@ -38,6 +44,8 @@ export function DetailView({
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notes, setNotes] = useState("");
+  const [videoMsg, setVideoMsg] = useState<string | null>(null);
+  const [videoBusy, setVideoBusy] = useState(false);
 
   function load() {
     setData(null);
@@ -72,6 +80,24 @@ export function DetailView({
     }
   }
 
+  async function attachVideo() {
+    setVideoMsg(null);
+    setVideoBusy(true);
+    try {
+      const part = await pickDemoVideo();
+      if (part) {
+        setVideoMsg("Uploading video…");
+        await uploadDemoVideo(client, taskId, part);
+        setVideoMsg(null);
+        load();
+      }
+    } catch (e) {
+      setVideoMsg(e instanceof Error ? e.message : "Video upload failed.");
+    } finally {
+      setVideoBusy(false);
+    }
+  }
+
   if (error) return <Text style={styles.empty}>Couldn&apos;t load this task.</Text>;
   if (!data) return <ActivityIndicator color={theme.primary} style={{ marginTop: 24 }} />;
 
@@ -94,6 +120,30 @@ export function DetailView({
           {data.audioNotes.map((a) => (
             <AudioNotePlayer key={a.id} url={a.url} />
           ))}
+        </View>
+      )}
+
+      {(videoAttachAvailable() ||
+        (data.demoVideos && data.demoVideos.length > 0)) && (
+        <View style={styles.audioWrap}>
+          <Text style={styles.audioHeading}>Demo videos</Text>
+          {data.demoVideos?.map((v) => (
+            <Text key={v.id} style={styles.videoRow} numberOfLines={1}>
+              🎬 {v.filename}
+            </Text>
+          ))}
+          {videoAttachAvailable() && (
+            <Pressable
+              style={[styles.audioBtn, videoBusy && { opacity: 0.5 }]}
+              onPress={() => void attachVideo()}
+              disabled={videoBusy}
+            >
+              <Text style={styles.audioBtnText}>
+                {videoBusy ? "Uploading…" : "🎬 Attach demo video"}
+              </Text>
+            </Pressable>
+          )}
+          {videoMsg && <Text style={styles.videoMsg}>{videoMsg}</Text>}
         </View>
       )}
 
@@ -214,6 +264,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   audioBtnText: { color: theme.fg, fontSize: 14, fontWeight: "600" },
+  videoRow: { color: theme.fg, fontSize: 13 },
+  videoMsg: { color: theme.destructive, fontSize: 12 },
   input: {
     backgroundColor: theme.bg,
     borderWidth: 1,

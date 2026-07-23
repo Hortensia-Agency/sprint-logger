@@ -17,6 +17,8 @@ pnpm add react-native-gesture-handler react-native-reanimated \
   @react-native-async-storage/async-storage
 # optional — only if you want screenshot capture:
 pnpm add react-native-view-shot
+# optional — only if you want demo-video attach (OS-recorder clips):
+pnpm add expo-image-picker expo-file-system
 ```
 
 Mount once near the app root, inside a `GestureHandlerRootView`.
@@ -140,3 +142,22 @@ A captured screenshot is visible to everyone on the project's QA roster (the
 same tenant). Don't surface capture on screens showing other users' personal
 data without a redaction step. Capture is always tester-initiated and optional
 (omit `react-native-view-shot` to disable it entirely).
+
+## Demo videos (v0.4.0+)
+
+Testers can attach an OS-recorded screen clip (iOS Control Center recorder /
+Android screen record) to a bug report or to a task they're verifying. Needs
+both optional peers `expo-image-picker` (the library picker) and
+`expo-file-system` (the upload); without them the control never renders.
+
+- Upload is a presigned direct PUT to Sprint's storage, streamed **from disk**
+  via `FileSystem.uploadAsync` — the clip never enters the JS heap, so a
+  150 MB video can't OOM the host app. Never replace this path with
+  `fetch(uri)` + blob.
+- Caps: 150 MB per clip (server-enforced twice: at presign and by a
+  size-verify after upload) plus a per-tenant demo-storage quota.
+- **HEVC caveat**: iOS records HEVC/H.265 by default ("High Efficiency"), and
+  some Android OEM recorders do too. Sprint stores the clip either way, but
+  desktop browsers generally can't play HEVC. If a clip won't play on the
+  task page, re-record with HEVC off (iOS: Settings → Camera → Formats →
+  Most Compatible). There is no server-side transcoding.
