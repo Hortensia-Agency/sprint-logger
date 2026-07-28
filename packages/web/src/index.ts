@@ -604,11 +604,11 @@ function installBreadcrumbs(): void {
   try {
     const origFetch = window.fetch;
     if (typeof origFetch === "function") {
-      window.fetch = function (
+      const patchedFetch = function (
         this: typeof window,
-        ...args: Parameters<typeof fetch>
+        input: URL | RequestInfo,
+        opts?: RequestInit,
       ) {
-        const [input, opts] = args;
         const method =
           (opts?.method ||
             (typeof input === "object" && input && "method" in input
@@ -622,7 +622,7 @@ function installBreadcrumbs(): void {
               ? input.href
               : (input as Request).url;
         const started = now();
-        return origFetch.apply(this, args).then(
+        return origFetch.call(this, input as RequestInfo, opts).then(
           (res) => {
             try {
               pushCrumb({
@@ -667,6 +667,7 @@ function installBreadcrumbs(): void {
           }
         );
       };
+      window.fetch = patchedFetch as typeof window.fetch;
     }
   } catch {
     /* fetch not patchable */
