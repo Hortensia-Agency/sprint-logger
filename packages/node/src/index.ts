@@ -122,6 +122,13 @@ export interface CaptureContext {
    * failing outbound request is attached.
    */
   httpContext?: HttpContext;
+  /**
+   * Whether the app handled this error. Defaults to true for manual capture.
+   * Set false when the error escaped the app's own handling and was only
+   * caught by an instrumentation boundary (which then re-throws) — the inbox
+   * facets on this to separate "deliberately caught" from "crashed".
+   */
+  handled?: boolean;
 }
 
 interface ResolvedConfig
@@ -441,14 +448,17 @@ function normalizeError(input: unknown): {
 /**
  * Capture an exception. Fire-and-forget: resolves once the POST settles but
  * NEVER rejects — a telemetry failure must not become an application failure.
- * Public manual capture is `handled:true`; global handlers call capture(...)
- * directly with handled:false.
+ * Defaults to `handled:true` (manual capture); global handlers call capture(...)
+ * directly with handled:false. Pass `ctx.handled === false` when capturing an
+ * error that ESCAPED the app's own handling — e.g. a framework boundary
+ * wrapper that captures and re-throws — so the inbox's handled facet stays
+ * meaningful.
  */
 export async function captureException(
   error: unknown,
   ctx: CaptureContext = {}
 ): Promise<void> {
-  return capture(error, ctx, true);
+  return capture(error, ctx, ctx.handled ?? true);
 }
 
 async function capture(

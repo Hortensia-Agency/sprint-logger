@@ -4,3 +4,10 @@ dist/
 .DS_Store
 *.tgz
 .pnpm-store/
+
+# Swift (packages/apple) — SPM build output and local resolution state.
+# .build holds compiled artifacts; Package.resolved is a consumer-side lock and
+# does not belong to a library package (an app pins its own versions).
+.build/
+.swiftpm/
+Package.resolved

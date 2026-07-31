@@ -1,22 +1,24 @@
 {
-  "name": "@sprint-logger/node",
-  "version": "0.2.0",
-  "description": "Sprint Signals error logger for Node services. init() once at boot, captureException() around boundaries. Pseudonymous, PII-safe.",
+  "name": "@sprint-logger/firebase",
+  "version": "0.1.0",
+  "description": "Sprint Signals error logger for Firebase Cloud Functions v2. Wrap a handler, get every throw captured with trigger context. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",
     "error-logging",
     "sprint",
     "signals",
-    "node",
+    "firebase",
+    "cloud-functions",
+    "serverless",
     "observability"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hortensia-Agency/sprint-logger.git",
-    "directory": "packages/node"
+    "directory": "packages/firebase"
   },
-  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/node#readme",
+  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/firebase#readme",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -48,6 +50,9 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@sprint-logger/node": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
