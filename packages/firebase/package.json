@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/firebase",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sprint Signals error logger for Firebase Cloud Functions v2. Wrap a handler, get every throw captured with trigger context. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",
