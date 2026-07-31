@@ -46,7 +46,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "verify": "tsup && publint --strict"
+    "verify": "tsup && publint --strict",
+    "prepublishOnly": "node ./scripts/assert-pnpm-publish.mjs"
   },
   "publishConfig": {
     "access": "public"
