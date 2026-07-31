@@ -1,12 +1,16 @@
 # Sprint Logger SDKs
 
-Client SDKs for **Sprint Signals** — error capture for web, Node, and React Native apps. Errors are grouped, enriched with non-identifying device/OS/browser/timezone context, and surfaced in your Sprint project's inbox.
+Client SDKs for **Sprint Signals** — error capture for web, Node, React Native, Firebase, and Apple apps. Errors are grouped, enriched with non-identifying device/OS/browser/timezone context, and surfaced in your Sprint project's inbox.
 
 | Package | Runtime | Install |
 |---|---|---|
 | [`@sprint-logger/web`](./packages/web) | Browser (Next.js, Vite, CRA, Astro, …) | `npm i @sprint-logger/web` |
 | [`@sprint-logger/node`](./packages/node) | Node services | `npm i @sprint-logger/node` |
 | [`@sprint-logger/rn`](./packages/rn) | React Native / Expo | `npm i @sprint-logger/rn` |
+| [`@sprint-logger/firebase`](./packages/firebase) | Firebase Cloud Functions v2 | `npm i @sprint-logger/firebase` |
+| [`SprintSignals`](https://github.com/Hortensia-Agency/sprint-logger-apple) ↗ | iOS / macOS / tvOS / watchOS | SPM — see below |
+
+**The Apple SDK lives in a separate repo**, [sprint-logger-apple](https://github.com/Hortensia-Agency/sprint-logger-apple). Swift Package Manager resolves from a git repository and requires `Package.swift` at the repository root, so it cannot sit in a subdirectory of this monorepo. Add it in Xcode via **File → Add Package Dependencies** with that repo's URL.
 
 Plain-HTML / no-build sites don't need a package — use the hosted script:
 `<script src="https://sprint.hortensia-agency.com/signals.js" data-sprint-signals-key="sk_sig_…" defer></script>`
