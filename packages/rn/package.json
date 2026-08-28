@@ -1,7 +1,7 @@
 {
   "name": "@sprint-logger/rn",
-  "version": "0.1.1",
-  "description": "Sprint Signals error logger for React Native / Expo. init() once, captures native JS crashes with iOS/Android device context. Pseudonymous, PII-safe.",
+  "version": "0.2.0",
+  "description": "Sprint Signals error logger for React Native / Expo. init() once, captures JS crashes, Reanimated worklet errors, and unhandled rejections, with next-launch delivery for crashes that kill the runtime. Pseudonymous, PII-safe.",
   "keywords": [
     "error-tracking",
     "error-logging",

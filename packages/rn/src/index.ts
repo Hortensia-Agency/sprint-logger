@@ -19,6 +19,8 @@
  */
 
 import { installDeadTapDetection } from "./dead-tap";
+import { installWorkletHandler } from "./worklet";
+import { savePending, clearPending, takePending } from "./crash-store";
 
 // Static imports (NOT runtime require) so Metro resolves them in the host's
 // bundle graph. esbuild rewrites a bundled `require("react-native")` into a
@@ -101,6 +103,43 @@ export interface SignalsRnConfig {
     components: Record<string, unknown>;
     enabled?: boolean;
   };
+  /**
+   * Capture errors thrown inside Reanimated worklets (the UI-thread JS runtime).
+   * ErrorUtils cannot see these — see worklet.ts. Default true; a host without
+   * Reanimated installed is a silent no-op. Set false to skip the probe.
+   */
+  captureWorkletErrors?: boolean;
+  /**
+   * Capture unhandled promise rejections. RN routes these through its own
+   * tracking hook rather than ErrorUtils, so they are invisible to the global
+   * handler. Default true.
+   */
+  captureUnhandledRejections?: boolean;
+  /**
+   * Treat every `console.error(...)` as a captured signal, not just a
+   * breadcrumb — retroactively covering catch blocks that log instead of
+   * rethrowing.
+   *
+   * Default FALSE, deliberately diverging from the web SDK. On native this
+   * would (a) change reported volume for every existing host the moment they
+   * upgrade, and (b) double-report any `catch { console.error(e); throw e }`
+   * — once here, once from the global handler. Crash parity is delivered by
+   * worklet + rejection + persistence capture, none of which add noise. Opt in
+   * when you actually want logged errors as signals.
+   */
+  captureConsoleErrors?: boolean;
+  /**
+   * Persist an uncaught error to storage BEFORE attempting delivery, and flush
+   * anything left over at the next init(). This is what lets a crash that kills
+   * the JS runtime mid-send still be reported (on the following launch).
+   * Default true.
+   */
+  persistCrashes?: boolean;
+  /**
+   * Delivery failures are reported here. When omitted the SDK logs a single
+   * warning per distinct failure to the console instead of failing silently —
+   * an empty handler is the documented way to opt out of that.
+   */
   onError?: (err: unknown) => void;
 }
 
@@ -129,11 +168,45 @@ interface Resolved {
   origin: string;
   release?: string;
   onError?: (err: unknown) => void;
+  /** Host supplied its own onError — suppress the default console warning. */
+  hasOnError: boolean;
+  persistCrashes: boolean;
   userToken: string;
   env: Record<string, unknown>;
 }
 
 let config: Resolved | null = null;
+
+// Distinct delivery failures already warned about, so a crash-looping app logs
+// once per cause rather than on every attempt.
+const warned = new Set<string>();
+
+/**
+ * Surface a delivery failure. The 0.1.x behaviour was to call an optional
+ * onError and otherwise do nothing, which made a misconfigured key, a 402, and
+ * a dropped 422 all indistinguishable from success — the reason the Stelify
+ * miss went unexplained. Now a host that supplies no handler still gets one
+ * console warning per distinct cause; passing `onError: () => {}` remains the
+ * explicit opt-out.
+ */
+function reportError(err: unknown, hint?: string): void {
+  try {
+    if (config?.hasOnError) {
+      config.onError?.(err);
+      return;
+    }
+    const key = hint ?? String((err as { message?: string })?.message ?? err);
+    if (warned.has(key)) return;
+    warned.add(key);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[sprint-signals] delivery failed: ${key}. ` +
+        `Pass onError to handle this yourself, or onError: () => {} to silence it.`
+    );
+  } catch {
+    /* reporting the failure must never throw */
+  }
+}
 
 /**
  * Pseudonymous RN env (enrichment plan, D-3). react-native's Platform is a
@@ -339,6 +412,19 @@ function installBreadcrumbs(): void {
         } catch {
           /* swallow */
         }
+        // v2 parity with the web SDK: a logged error IS a signal. This is what
+        // retroactively covers `catch (e) { console.error(e) }` blocks that
+        // never rethrow, so the global handler never sees them.
+        try {
+          if (lvl === "error" && captureConsoleErrors && config) {
+            const first = args.find((a) => a instanceof Error) ?? args[0];
+            if (first !== undefined) {
+              void capture(first, {}, true, { via: "console.error" });
+            }
+          }
+        } catch {
+          /* swallow */
+        }
         return (orig as (...a: unknown[]) => unknown).apply(this, args);
       };
     }
@@ -423,7 +509,11 @@ function installBreadcrumbs(): void {
 
 export async function init(cfg: SignalsRnConfig): Promise<void> {
   if (!cfg.key || !cfg.key.startsWith("sk_sig_")) {
-    cfg.onError?.(new Error("sprint-signals-rn: invalid or missing key"));
+    const err = new Error("sprint-signals-rn: invalid or missing key");
+    // config is not set yet, so route around reportError's config lookup.
+    if (cfg.onError) cfg.onError(err);
+    // eslint-disable-next-line no-console
+    else console.warn(`[sprint-signals] ${err.message}`);
     return;
   }
   config = {
@@ -431,11 +521,27 @@ export async function init(cfg: SignalsRnConfig): Promise<void> {
     origin: (cfg.origin ?? DEFAULT_ORIGIN).replace(/\/+$/, ""),
     release: cfg.release,
     onError: cfg.onError,
+    hasOnError: typeof cfg.onError === "function",
+    persistCrashes: cfg.persistCrashes ?? true,
     userToken: await loadToken(),
     env: collectRnEnv(),
   };
+  captureConsoleErrors = cfg.captureConsoleErrors ?? false;
   if (cfg.captureBreadcrumbs ?? true) installBreadcrumbs();
   if (cfg.installGlobalHandler ?? true) installHandler();
+  if (cfg.captureUnhandledRejections ?? true) installRejectionHandler();
+  // Worklet (UI-runtime) capture — the class of crash ErrorUtils cannot see.
+  if (cfg.captureWorkletErrors ?? true) {
+    try {
+      teardownWorklet = installWorkletHandler((error, source) => {
+        void capture(error, { severity: "blocker" }, false, { runtime: source });
+      });
+    } catch (e) {
+      reportError(e, "worklet-install");
+    }
+  }
+  // Ship anything a previous launch died before delivering.
+  if (config.persistCrashes) void flushPending();
   // Signals v2 dead-tap (D-5) — only when the host passed touch components AND
   // the runtime flag is on (default on when the block is present). Wrapped so a
   // patch failure degrades to no-op.
@@ -447,7 +553,7 @@ export async function init(cfg: SignalsRnConfig): Promise<void> {
         () => currentRoute
       );
     } catch (e) {
-      cfg.onError?.(e);
+      reportError(e, "deadtap-install");
     }
   }
 }
@@ -456,6 +562,9 @@ export async function init(cfg: SignalsRnConfig): Promise<void> {
 // evidence can carry it (RN has no location.pathname).
 let currentRoute: string | undefined;
 let teardownDeadTap: (() => void) | null = null;
+let teardownWorklet: (() => void) | null = null;
+let captureConsoleErrors = false;
+let rejectionHandlerInstalled = false;
 
 /** Tell the SDK the current screen (for dead-tap route evidence). */
 export function setRoute(route: string | undefined): void {
@@ -477,6 +586,79 @@ function installHandler(): void {
     void capture(error, { severity: isFatal ? "blocker" : undefined }, false);
     prev?.(error, isFatal); // preserve RedBox / host behavior
   });
+}
+
+/**
+ * Unhandled promise rejections. RN does NOT route these through ErrorUtils —
+ * it uses either the `unhandledrejection` event (newer RN / Hermes) or the
+ * bundled `promise` polyfill's rejection-tracking hook. A rejected promise that
+ * nobody catches is one of the most common real-world failure shapes, and 0.1.x
+ * missed all of them. Both paths are probed; neither present degrades to no-op.
+ */
+function installRejectionHandler(): void {
+  if (rejectionHandlerInstalled) return;
+  rejectionHandlerInstalled = true;
+
+  // Path 1 — the standard event, when the runtime supports it.
+  try {
+    const g = globalThis as unknown as {
+      addEventListener?: (t: string, h: (e: unknown) => void) => void;
+    };
+    if (typeof g.addEventListener === "function") {
+      g.addEventListener("unhandledrejection", (e: unknown) => {
+        const reason = (e as { reason?: unknown })?.reason ?? e;
+        void capture(reason, {}, false, { via: "unhandledrejection" });
+      });
+    }
+  } catch {
+    /* not supported on this runtime */
+  }
+
+  // Path 2 — RN's bundled promise polyfill rejection tracking. Resolved
+  // softly: absent on runtimes that ship native promises only.
+  try {
+    const req = (globalThis as { require?: (id: string) => unknown }).require;
+    if (typeof req !== "function") return;
+    const tracking = req("promise/setimmediate/rejection-tracking") as
+      | { enable?: (o: Record<string, unknown>) => void }
+      | undefined;
+    if (typeof tracking?.enable !== "function") return;
+    tracking.enable({
+      allRejections: true,
+      onUnhandled: (_id: unknown, error: unknown) => {
+        void capture(error, {}, false, { via: "unhandled-rejection-tracking" });
+      },
+      onHandled: () => {
+        /* rejection was handled late — nothing to report */
+      },
+    });
+  } catch {
+    /* polyfill absent or a different shape — skip */
+  }
+}
+
+/**
+ * Deliver anything a previous launch persisted but never sent. Runs once per
+ * init(); failures re-queue so a launch with no network does not lose the crash.
+ */
+async function flushPending(): Promise<void> {
+  try {
+    const pending = await takePending();
+    for (const entry of pending) {
+      try {
+        // Mark it so the inbox can tell a next-launch delivery from a live one.
+        const body = { ...entry.body };
+        const ctx = (body.context ?? {}) as Record<string, unknown>;
+        body.context = { ...ctx, deliveredOnNextLaunch: true };
+        const ok = await post(body, { persist: false });
+        if (!ok) await savePending(entry.id, entry.body);
+      } catch {
+        /* one bad entry must not stop the rest of the flush */
+      }
+    }
+  } catch (e) {
+    reportError(e, "flush");
+  }
 }
 
 function normalizeError(input: unknown): {
@@ -504,7 +686,14 @@ export async function captureException(
 async function capture(
   error: unknown,
   ctx: CaptureContext,
-  handled: boolean
+  handled: boolean,
+  /**
+   * Extra provenance folded into the wire `context` bag — which runtime the
+   * error came from, how it was observed. Deliberately NOT `env`: the server's
+   * DiagnosticContextSchema is `.strict()`, so an unknown env key 422s and the
+   * whole event is dropped. `context` is the free-form scalar bag.
+   */
+  extra?: Record<string, string | number | boolean | null>
 ): Promise<void> {
   if (!config) return;
   const { message, stack, errorType } = normalizeError(error);
@@ -512,18 +701,24 @@ async function capture(
   // trail. Both bounded to 50.
   const trail = ctx.breadcrumbs ? ctx.breadcrumbs.slice(-50) : getBreadcrumbs();
   const httpContext = ctx.httpContext ?? freshHttp();
-  await post({
-    message: message.slice(0, 2000),
-    stack: stack ? stack.slice(0, 20000) : undefined,
-    userToken: ctx.userToken ?? config.userToken,
-    route: ctx.route,
-    release: config.release,
-    severity: ctx.severity,
-    breadcrumbs: trail.length ? trail : undefined,
-    httpContext,
-    occurredAt: new Date().toISOString(),
-    env: { ...config.env, handled, ...(errorType ? { errorType } : {}) },
-  });
+  await post(
+    {
+      message: message.slice(0, 2000),
+      stack: stack ? stack.slice(0, 20000) : undefined,
+      userToken: ctx.userToken ?? config.userToken,
+      route: ctx.route ?? currentRoute,
+      release: config.release,
+      severity: ctx.severity,
+      breadcrumbs: trail.length ? trail : undefined,
+      httpContext,
+      context: extra,
+      occurredAt: new Date().toISOString(),
+      env: { ...config.env, handled, ...(errorType ? { errorType } : {}) },
+    },
+    // An uncaught error may be the app's last act — persist before sending so a
+    // runtime teardown mid-flight does not lose it.
+    { persist: !handled && config.persistCrashes }
+  );
 }
 
 export async function captureMessage(
@@ -655,21 +850,50 @@ export function startSpan(
   };
 }
 
-async function post(body: Record<string, unknown>): Promise<void> {
-  if (!config) return;
+/**
+ * Deliver one payload. Returns true when the server accepted it.
+ *
+ * When `persist` is set the payload is written to storage BEFORE the request
+ * and cleared only on acceptance — so a crash that kills the runtime during the
+ * fetch leaves the report queued for the next launch instead of losing it.
+ */
+async function post(
+  body: Record<string, unknown>,
+  opts: { persist?: boolean } = {}
+): Promise<boolean> {
+  if (!config) return false;
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v;
+
+  let pendingId: string | null = null;
+  if (opts.persist) {
+    pendingId = randHex();
+    await savePending(pendingId, clean);
+  }
+
   try {
-    const clean: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v;
     const res = await fetch(`${config.origin}/api/signals/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Signal-Key": config.key },
       body: JSON.stringify(clean),
     });
     if (!res.ok && res.status !== 202) {
-      config.onError?.(new Error(`sprint-signals-rn ingest ${res.status}`));
+      // 402/404/422 are terminal — retrying on the next launch cannot fix an
+      // un-entitled tenant, a bad key, or a payload the schema rejects. Drop the
+      // queued copy so it does not retry forever, but make the cause loud.
+      if (pendingId) await clearPending(pendingId);
+      reportError(
+        new Error(`sprint-signals-rn ingest ${res.status}`),
+        `ingest-${res.status}`
+      );
+      return false;
     }
+    if (pendingId) await clearPending(pendingId);
+    return true;
   } catch (err) {
-    config?.onError?.(err);
+    // Network failure — leave the persisted copy queued for the next launch.
+    reportError(err, "network");
+    return false;
   }
 }
 
@@ -686,6 +910,14 @@ export function _reset(): void {
     /* best-effort */
   }
   teardownDeadTap = null;
+  try {
+    teardownWorklet?.();
+  } catch {
+    /* best-effort */
+  }
+  teardownWorklet = null;
+  captureConsoleErrors = false;
+  warned.clear();
 }
 
 /** Test-only: read the current breadcrumb buffer. */
@@ -721,7 +953,7 @@ async function sendAnalytics(body: Record<string, unknown>): Promise<void> {
       body: JSON.stringify(clean),
     });
   } catch (err) {
-    config?.onError?.(err);
+    reportError(err, "analytics");
   }
 }
 

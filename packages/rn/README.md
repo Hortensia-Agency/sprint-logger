@@ -1,6 +1,6 @@
 # @sprint-logger/rn
 
-Sprint Signals error logger for **React Native / Expo**. Hooks the global error handler and captures native JS crashes with iOS/Android device context.
+Sprint Signals error logger for **React Native / Expo**. Captures JS crashes, Reanimated worklet errors, and unhandled promise rejections, with iOS/Android device context.
 
 ```sh
 npm i @sprint-logger/rn
@@ -18,8 +18,33 @@ catch (e) { captureException(e, { route: "OrdersScreen" }); }
 
 ## API
 
-- `init({ key, release?, origin?, installGlobalHandler?, onError?, deadTap? })` — call once. `deadTap` is the v2 dead-tap detector (see below).
+- `init({ key, release?, origin?, installGlobalHandler?, onError?, deadTap?, ... })` — call once. `deadTap` is the v2 dead-tap detector (see below).
 - `captureException(error, ctx?)` / `captureMessage(message, ctx?)`
+
+## Crash coverage (0.2.0)
+
+0.1.x hooked only `ErrorUtils.setGlobalHandler`, which sees the **main JS runtime** and nothing else. Three classes of real crash were invisible; all three are captured now, each with its own opt-out.
+
+| Option | Default | What it covers |
+|---|---|---|
+| `captureWorkletErrors` | `true` | Errors thrown inside **Reanimated worklets**, which run in a *separate* JS runtime on the UI thread. `ErrorUtils` cannot observe these at all — an infinite-recursion scroll handler would kill the app silently. No-op when Reanimated isn't installed. |
+| `captureUnhandledRejections` | `true` | Unhandled promise rejections. RN routes these through its own tracking hook, not `ErrorUtils`. |
+| `persistCrashes` | `true` | Writes an **uncaught** error to storage *before* sending, and flushes it at the next `init()`. A crash that tears down the runtime mid-request is reported on the following launch instead of being lost. Recovered reports carry `context.deliveredOnNextLaunch`. |
+| `captureConsoleErrors` | `false` | Treats every `console.error(...)` as a signal, not just a breadcrumb. **Off by default** (the web SDK defaults it on): enabling it changes reported volume for an existing app and double-reports any `catch { console.error(e); throw e }`. Opt in deliberately. |
+
+### Delivery failures are loud
+
+`onError` is now optional in a meaningful way: **omit it and the SDK logs one console warning per distinct failure** (bad key, `402` un-entitled, `404` unknown project, `422` rejected payload, network error). Previously a missing handler — or the common `onError: () => {}` — made every failure indistinguishable from success.
+
+```ts
+await init({ key: "sk_sig_xxx" });                 // failures are visible
+await init({ key: "sk_sig_xxx", onError: () => {} }); // explicit opt-out
+await init({ key: "sk_sig_xxx", onError: (e) => Sentry.captureException(e) });
+```
+
+### Known limit
+
+This release is **pure JS with no native module**. A hard native crash — an OOM kill, a segfault in a native library, or a JSI/C++ abort that terminates the process in the same tick — can still outrun the JS that would report it, because even the storage write is asynchronous. `persistCrashes` closes the common case (a fatal JS error that unwinds over several ticks), not the instant-abort case. True parity there requires a native crash handler; that is tracked separately.
 
 ## Capture more than errors (v2)
 
