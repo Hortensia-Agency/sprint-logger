@@ -8,6 +8,7 @@ Client SDKs for **Sprint Signals** — error capture for web, Node, React Native
 | [`@sprint-logger/node`](./packages/node) | Node services | `npm i @sprint-logger/node` |
 | [`@sprint-logger/rn`](./packages/rn) | React Native / Expo | `npm i @sprint-logger/rn` |
 | [`@sprint-logger/firebase`](./packages/firebase) | Firebase Cloud Functions v2 | `npm i @sprint-logger/firebase` |
+| [`@sprint-logger/env`](./packages/env) | CLI: load Sprint secrets into a command's environment | `npx @sprint-logger/env run -- <cmd>` |
 | [`SprintSignals`](https://github.com/Hortensia-Agency/sprint-logger-apple) ↗ | iOS / macOS / tvOS / watchOS | SPM — see below |
 
 **The Apple SDK lives in a separate repo**, [sprint-logger-apple](https://github.com/Hortensia-Agency/sprint-logger-apple). Swift Package Manager resolves from a git repository and requires `Package.swift` at the repository root, so it cannot sit in a subdirectory of this monorepo. Add it in Xcode via **File → Add Package Dependencies** with that repo's URL.

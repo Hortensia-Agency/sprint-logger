@@ -1,0 +1,45 @@
+{
+  "name": "@sprint-logger/env",
+  "version": "0.1.0",
+  "description": "Load a project's Sprint secrets into a command's environment. sprint-env run -- pnpm dev. Nothing is written to disk.",
+  "keywords": [
+    "secrets",
+    "env",
+    "dotenv",
+    "sprint",
+    "vault"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hortensia-Agency/sprint-logger.git",
+    "directory": "packages/env"
+  },
+  "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/env#readme",
+  "type": "module",
+  "bin": {
+    "sprint-env": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-timeout=20000 test/*.test.ts",
+    "verify": "tsup && publint --strict"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "publint": "^0.2.12",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.0"
+  }
+}
