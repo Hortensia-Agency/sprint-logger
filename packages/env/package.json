@@ -1,7 +1,7 @@
 {
   "name": "@sprint-logger/env",
-  "version": "0.1.0",
-  "description": "Load a project's Sprint secrets into a command's environment. sprint-env run -- pnpm dev. Nothing is written to disk.",
+  "version": "0.2.0",
+  "description": "Load a project's Sprint secrets into process.env, like dotenv: import \"@sprint-logger/env/config\". Nothing is written to disk.",
   "keywords": [
     "secrets",
     "env",
@@ -17,6 +17,32 @@
   },
   "homepage": "https://github.com/Hortensia-Agency/sprint-logger/tree/main/packages/env#readme",
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./config": {
+      "import": {
+        "types": "./dist/config.d.ts",
+        "default": "./dist/config.js"
+      },
+      "require": {
+        "types": "./dist/config.d.cts",
+        "default": "./dist/config.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "sprint-env": "./dist/cli.js"
   },
@@ -28,10 +54,10 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "rm -rf dist && tsup",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-timeout=20000 test/*.test.ts",
-    "verify": "tsup && publint --strict"
+    "verify": "pnpm build && publint --strict"
   },
   "publishConfig": {
     "access": "public"

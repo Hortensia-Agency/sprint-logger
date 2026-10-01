@@ -2,7 +2,8 @@
 import { spawn } from "node:child_process";
 import { localFileKeys } from "./env-file.ts";
 import { formatExplain, mergeEnv, type Merged } from "./merge.ts";
-import { pull, PullError, tokenKind, type TokenKind } from "./pull.ts";
+import { pull, PullError } from "./pull.ts";
+import { committedFileWarning, resolveSettings, SettingsError, type Settings } from "./settings.ts";
 
 const USAGE = `sprint-env: load Sprint secrets into a command's environment
 
@@ -16,7 +17,8 @@ pull   checks access and prints what run would load: key, source, kind. Never va
 --preserve-env   machine tokens only: keep these keys from the current environment
 
 Environment:
-  SPRINT_TOKEN     a personal dev token (sprint_dev_...) or machine token (sprint_svc_...)
+  SPRINT_TOKEN     a personal dev token (sprint_dev_...) or machine token (sprint_svc_...),
+                   from the environment or the local .env files
   SPRINT_API_URL   defaults to https://sprint.hortensia-agency.com
   SPRINT_CERT_PIN  optional base64 sha256 of the server's public key
 `;
@@ -64,17 +66,17 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-function config(): { token: string; kind: TokenKind; apiUrl: string; certPin?: string } {
-  const token = process.env.SPRINT_TOKEN || process.env.SPRINT_SERVICE_TOKEN;
-  if (!token) fail("SPRINT_TOKEN is not set. Create a dev token on the project's Secrets page.");
-  const kind = tokenKind(token);
-  if (!kind) fail("SPRINT_TOKEN is not a Sprint token (expected sprint_dev_... or sprint_svc_...).");
-  return {
-    token,
-    kind,
-    apiUrl: process.env.SPRINT_API_URL || "https://sprint.hortensia-agency.com",
-    certPin: process.env.SPRINT_CERT_PIN || undefined,
-  };
+function config(): Settings {
+  let settings: Settings | null;
+  try {
+    settings = resolveSettings(process.cwd(), process.env);
+  } catch (err) {
+    if (err instanceof SettingsError) fail(err.message);
+    throw err;
+  }
+  if (!settings) fail("SPRINT_TOKEN is not set. Create a dev token on the project's Secrets page and add it to .env.local.");
+  if (settings.committedFile) process.stderr.write(`sprint-env: ${committedFileWarning(settings.committedFile)}\n`);
+  return settings;
 }
 
 function warnBox(lines: string[]): void {
@@ -125,7 +127,8 @@ async function load(args: Args): Promise<Merged | null> {
 function run(command: string[], inject: Record<string, string>): void {
   const child = spawn(command[0], command.slice(1), {
     stdio: "inherit",
-    env: { ...process.env, ...inject },
+    // The marker stops an in-process config() from fetching a second time.
+    env: { ...process.env, ...inject, SPRINT_ENV_LOADED: "1" },
     // npm/pnpm/yarn are .cmd shims on Windows and need a shell to start.
     shell: process.platform === "win32",
   });

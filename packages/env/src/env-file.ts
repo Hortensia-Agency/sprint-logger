@@ -1,10 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The files Next.js, Vite and dotenv-flow load in development. A key defined in
-// any of them is the developer's own value and beats Sprint's.
-export const DEV_ENV_FILES = [".env", ".env.local", ".env.development", ".env.development.local"];
-
 // dotenv's line grammar (lib/main.js, v17), copied verbatim so a key the
 // framework will load is exactly a key this loader skips.
 const LINE =
@@ -25,10 +21,15 @@ export function parseEnvFile(src: string): Record<string, string> {
   return out;
 }
 
-/** Keys defined in the dev env files in `cwd`. Missing files are skipped. */
-export function localFileKeys(cwd: string): Set<string> {
-  const keys = new Set<string>();
-  for (const name of DEV_ENV_FILES) {
+/**
+ * Values from the env files Next.js, Vite and dotenv-flow load in development,
+ * with the file each came from. A key defined here is the developer's own value
+ * and beats Sprint's. Missing files are skipped.
+ */
+export function readLocalEnv(cwd: string): Record<string, { value: string; file: string }> {
+  const out: Record<string, { value: string; file: string }> = {};
+  // Lowest priority first, so a later file overwrites: Next's order.
+  for (const name of [".env", ".env.development", ".env.local", ".env.development.local"]) {
     let src: string;
     try {
       src = readFileSync(join(cwd, name), "utf8");
@@ -36,7 +37,12 @@ export function localFileKeys(cwd: string): Set<string> {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw err;
     }
-    for (const key of Object.keys(parseEnvFile(src))) keys.add(key);
+    for (const [key, value] of Object.entries(parseEnvFile(src))) out[key] = { value, file: name };
   }
-  return keys;
+  return out;
+}
+
+/** Keys defined in the dev env files in `cwd`. */
+export function localFileKeys(cwd: string): Set<string> {
+  return new Set(Object.keys(readLocalEnv(cwd)));
 }
