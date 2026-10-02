@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { localFileKeys } from "./env-file.ts";
 import { mergeEnv, type ExplainRow } from "./merge.ts";
+import { detectPhase } from "./phase.ts";
 import type { Pulled } from "./pull.ts";
 import { committedFileWarning, resolveSettings, SettingsError } from "./settings.ts";
 
@@ -20,9 +21,19 @@ type WorkerResult = { ok: true; pulled: Pulled } | { ok: false; reason: "rejecte
 // (which inherits the values) skip the fetch.
 const LOADED = "SPRINT_ENV_LOADED";
 
-const WORKER = fileURLToPath(
-  new URL(import.meta.url.endsWith(".ts") ? "./pull-worker.ts" : "./pull-worker.js", import.meta.url)
-);
+// The published build inlines the worker's source (tsup.config.ts), so it runs
+// with `node -e` and needs no file next to this one: bundlers and Next's
+// standalone output don't copy a file that's only spawned by path. Running
+// from source (tests), the worker file is right here.
+declare const __SPRINT_PULL_WORKER__: string | undefined;
+
+function workerArgs(): string[] {
+  if (typeof __SPRINT_PULL_WORKER__ === "string") return ["-e", __SPRINT_PULL_WORKER__];
+  // Through a variable: bundlers treat `new URL("<literal>", import.meta.url)`
+  // as an asset to bundle, and this file only exists next to the source.
+  const source = "./pull-worker.ts";
+  return [fileURLToPath(new URL(source, import.meta.url))];
+}
 
 function warn(lines: string[]): void {
   const width = Math.max(...lines.map((l) => l.length));
@@ -38,11 +49,12 @@ function fetchSync(settings: { token: string; apiUrl: string; certPin?: string }
     SPRINT_TOKEN: settings.token,
     SPRINT_API_URL: settings.apiUrl,
     SPRINT_CERT_PIN: settings.certPin,
+    SPRINT_PULL_PHASE: detectPhase(process.env, process.argv) ?? undefined,
   };
   // An --inspect or --require meant for the app must not run in the fetcher.
   delete env.NODE_OPTIONS;
   try {
-    const out = execFileSync(process.execPath, [WORKER], {
+    const out = execFileSync(process.execPath, workerArgs(), {
       env,
       timeout: 20_000,
       maxBuffer: 64 * 1024 * 1024,

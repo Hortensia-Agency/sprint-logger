@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+// Built first by tsup.worker.config.ts (see the build script).
+const workerSource = readFileSync("dist/.worker/pull-worker.embedded.cjs", "utf8");
 
 export default defineConfig([
   {
@@ -14,6 +18,7 @@ export default defineConfig([
     format: ["esm", "cjs"],
     dts: true,
     shims: true,
+    define: { __SPRINT_PULL_WORKER__: JSON.stringify(workerSource) },
     sourcemap: true,
     target: "node18",
   },

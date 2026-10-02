@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/env",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Load a project's Sprint secrets into process.env, like dotenv: import \"@sprint-logger/env/config\". Nothing is written to disk.",
   "keywords": [
     "secrets",
@@ -54,7 +54,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "rm -rf dist && tsup",
+    "build": "rm -rf dist && tsup --config tsup.worker.config.ts && tsup && rm -rf dist/.worker",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-timeout=20000 test/*.test.ts",
     "verify": "pnpm build && publint --strict"

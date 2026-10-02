@@ -19,9 +19,18 @@ Then load the secrets once, before anything reads the environment:
 import "@sprint-logger/env/config";
 ```
 
+Next.js also needs it in `instrumentation.ts` (project root, or `src/` if the app uses one). With `output: "standalone"` the production server never runs `next.config`, so this is what loads the secrets when the container starts; elsewhere it's a harmless no-op, since the values are already loaded:
+
+```ts
+// instrumentation.ts
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") await import("@sprint-logger/env/config");
+}
+```
+
 Any other Node app: the same import as the first line of its server entry, or `require("@sprint-logger/env/config")`. Other config files work too (`vite.config.ts`, `astro.config.mjs`).
 
-`config()` is synchronous: it fetches in a short-lived child process, so the values are in `process.env` when the import returns. It runs once per process tree; child processes inherit the values. Use it in config files and server entry points, not inside code a bundler compiles.
+`config()` is synchronous: it fetches in a short-lived child process, so the values are in `process.env` when the import returns. It runs once per process tree; child processes inherit the values. It works when bundled (Next's instrumentation) and in Next's standalone output, since it needs no file besides itself. Use it in config files, `instrumentation.ts` and server entry points, not in code that runs in the browser.
 
 ```ts
 import { config } from "@sprint-logger/env";
@@ -31,6 +40,17 @@ const rows = config({ preserveEnv: ["PORT"] }); // [{ key, source, kind }], neve
 ## Build-time public variables
 
 `NEXT_PUBLIC_*`, `VITE_*` and similar are inlined into the client bundle at build time. With the import in `next.config`, `next build` already has them. Never store a real secret under a public prefix.
+
+## Build time and run time
+
+On the project's Secrets page a variable can be limited to the build or to the running app (Build / run time in its menu). The loader tells Sprint which phase it's pulling for:
+
+1. `SPRINT_PHASE=build|runtime`, when set.
+2. The framework command: `next build`, `vite build` → build; `next start`, `vite preview` → runtime; `dev` → everything.
+3. A Next.js standalone server (`node server.js`, loaded via `instrumentation.ts`) → runtime.
+4. The package script name: `build` → build, `start` → runtime.
+
+When none of these apply, the loader asks for everything. A server started some other way can set `SPRINT_PHASE=runtime` in its environment. Loaders before 0.3.0 always get everything.
 
 ## CLI
 

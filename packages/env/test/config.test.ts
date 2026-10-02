@@ -37,13 +37,16 @@ let server: Server;
 let apiUrl: string;
 let downUrl: string;
 let requests = 0;
+let lastPhase: string | null = null;
 
 before(async () => {
   server = createServer((req, res) => {
     requests++;
     const auth = req.headers.authorization ?? "";
     const body = auth === `Bearer ${DEV}` ? BODY.personal : auth === `Bearer ${SVC}` ? BODY.machine : null;
-    if (req.url !== "/api/env/pull" || !body) return void res.writeHead(401).end();
+    const url = new URL(req.url ?? "", "http://x");
+    lastPhase = url.searchParams.get("phase");
+    if (url.pathname !== "/api/env/pull" || !body) return void res.writeHead(401).end();
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -149,4 +152,15 @@ test("a token in .env gets a move-it warning", async () => {
   const r = await run(`config();`, { env: { SPRINT_API_URL: apiUrl }, files: { ".env": `SPRINT_TOKEN=${DEV}\n` } });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stderr, /SPRINT_TOKEN is in \.env.*Move it to \.env\.local/);
+});
+
+test("sends the phase it detects, so Sprint can leave out build-only or run-time-only variables", async () => {
+  const r = await run(`const rows = config();\n${PRINT}`, {
+    env: { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC, SPRINT_PHASE: "build" },
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(lastPhase, "build");
+  const plain = await run(`const rows = config();\n${PRINT}`, { env: { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC } });
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.equal(lastPhase, null);
 });

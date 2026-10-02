@@ -90,6 +90,8 @@ export async function pull(cfg: {
   token: string;
   certPin?: string;
   timeoutMs?: number;
+  /** Leave out variables not available in this phase; omitted = everything. */
+  phase?: "build" | "runtime" | null;
 }): Promise<Pulled> {
   const base = new URL(cfg.apiUrl);
   if (cfg.certPin) {
@@ -106,7 +108,9 @@ export async function pull(cfg: {
 
   let res: Response;
   try {
-    res = await fetch(new URL("/api/env/pull", base), {
+    const url = new URL("/api/env/pull", base);
+    if (cfg.phase) url.searchParams.set("phase", cfg.phase);
+    res = await fetch(url, {
       headers: { Authorization: `Bearer ${cfg.token}` },
       signal: AbortSignal.timeout(cfg.timeoutMs ?? 10_000),
     });

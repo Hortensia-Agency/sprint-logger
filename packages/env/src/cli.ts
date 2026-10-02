@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { localFileKeys } from "./env-file.ts";
 import { formatExplain, mergeEnv, type Merged } from "./merge.ts";
+import { detectPhase } from "./phase.ts";
 import { pull, PullError } from "./pull.ts";
 import { committedFileWarning, resolveSettings, SettingsError, type Settings } from "./settings.ts";
 
@@ -101,7 +102,9 @@ function report(merged: Merged): void {
 async function load(args: Args): Promise<Merged | null> {
   const cfg = config();
   try {
-    const pulled = await pull(cfg);
+    // `sprint-env run -- next build` pulls for the build; `pull` explains everything.
+    const phase = args.cmd === "run" ? detectPhase(process.env, ["node", ...args.command]) : null;
+    const pulled = await pull({ ...cfg, phase });
     return mergeEnv({
       pulled,
       shell: process.env,
