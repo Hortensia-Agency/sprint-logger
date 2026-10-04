@@ -42,3 +42,13 @@ export function resolveSettings(cwd: string, env: Record<string, string | undefi
 export function committedFileWarning(file: string): string {
   return `SPRINT_TOKEN is in ${file}, which projects often commit. Move it to .env.local.`;
 }
+
+/**
+ * A Coolify build passes build variables as Dockerfile ARG lines, printed with
+ * their values in the deploy log, unless the app's "Build secrets" setting is
+ * BuildKit secrets, which also sets COOLIFY_BUILD_SECRETS_HASH on every RUN.
+ */
+export function buildArgLeakWarning(env: Record<string, string | undefined>, phase: string | null): string | null {
+  if (phase !== "build" || !env.COOLIFY_RESOURCE_UUID || env.COOLIFY_BUILD_SECRETS_HASH) return null;
+  return "SPRINT_TOKEN reached this Coolify build as a build argument, so the deploy log shows it. In the app's Environment Variables, set Build secrets to Docker BuildKit secrets.";
+}

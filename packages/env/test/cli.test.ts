@@ -133,18 +133,15 @@ test("writes no file to the working directory or the temp directory", async () =
   assert.deepEqual(readdirSync(tmp), []);
 });
 
-test("machine token: the vault beats the shell unless --preserve-env", async () => {
-  const shell = { FOO: "stale", BAR: "stale" };
+test("machine token: the shell beats the vault; --preserve-env is accepted and ignored", async () => {
+  const shell = { FOO: "from-host" };
   const plain = await cli(["run", "--", process.execPath, "-e", PRINT_ENV], { token: SVC, env: shell });
   assert.equal(plain.code, 0, plain.stderr);
-  assert.deepEqual(JSON.parse(plain.stdout), { FOO: VALUES[0], BAR: VALUES[1] });
+  assert.deepEqual(JSON.parse(plain.stdout), { FOO: "from-host", BAR: VALUES[1] });
 
-  const kept = await cli(["run", "--preserve-env=FOO", "--", process.execPath, "-e", PRINT_ENV], {
-    token: SVC,
-    env: shell,
-  });
-  assert.deepEqual(JSON.parse(kept.stdout), { FOO: "stale", BAR: VALUES[1] });
-  assert.match(kept.stderr, /keeping FOO from the environment \(--preserve-env\)/);
+  const old = await cli(["run", "--preserve-env=FOO", "--", process.execPath, "-e", PRINT_ENV], { token: SVC, env: shell });
+  assert.equal(old.code, 0, old.stderr);
+  assert.deepEqual(JSON.parse(old.stdout), { FOO: "from-host", BAR: VALUES[1] });
 });
 
 test("Sprint down: a dev token warns and starts, a machine token exits 1", async () => {

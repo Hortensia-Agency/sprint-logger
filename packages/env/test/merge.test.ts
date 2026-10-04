@@ -10,13 +10,12 @@ const VARS: PulledVar[] = [
   { key: "LATER", kind: "proxy", source: "error", reason: "not enabled" },
 ];
 
-function merge(tokenKind: TokenKind, opts: { shell?: string[]; files?: string[]; preserve?: string[] } = {}) {
+function merge(tokenKind: TokenKind, opts: { shell?: string[]; files?: string[] } = {}) {
   const pulled: Pulled = { env: "dev", tokenKind, vars: VARS };
   return mergeEnv({
     pulled,
     shell: Object.fromEntries((opts.shell ?? []).map((k) => [k, "shell-value"])),
     fileKeys: new Set(opts.files ?? []),
-    preserve: new Set(opts.preserve ?? []),
   });
 }
 
@@ -41,24 +40,10 @@ test("personal: an env file beats the vault, the shell beats the file", () => {
   assert.deepEqual(sources(m), { SHARED: "file", MINE: "shell", NOPE: "none", LATER: "error" });
 });
 
-test("personal: --preserve-env changes nothing (local already wins)", () => {
-  const m = merge("personal", { preserve: ["SHARED"] });
-  assert.equal(m.inject.SHARED, "vault-shared");
-  assert.deepEqual(m.preserved, []);
-});
-
-test("machine: the vault beats the shell and ignores env files", () => {
+test("machine: the shell beats the vault, env files are not consulted", () => {
   const m = merge("machine", { shell: ["SHARED"], files: ["MINE"] });
-  assert.deepEqual(m.inject, { SHARED: "vault-shared", MINE: "vault-override" });
-  assert.equal(sources(m).SHARED, "shared");
-});
-
-test("machine: --preserve-env keeps listed shell keys and reports them", () => {
-  const m = merge("machine", { shell: ["SHARED"], preserve: ["SHARED", "MINE"] });
   assert.deepEqual(m.inject, { MINE: "vault-override" });
-  assert.equal(sources(m).SHARED, "shell");
-  // MINE is listed but not in the shell, so the vault value still applies.
-  assert.deepEqual(m.preserved, ["SHARED"]);
+  assert.deepEqual(sources(m), { SHARED: "shell", MINE: "override", NOPE: "none", LATER: "error" });
 });
 
 test("explain lists key, source and kind and never a value", () => {

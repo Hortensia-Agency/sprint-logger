@@ -4,18 +4,19 @@ import { localFileKeys } from "./env-file.ts";
 import { formatExplain, mergeEnv, type Merged } from "./merge.ts";
 import { detectPhase } from "./phase.ts";
 import { pull, PullError } from "./pull.ts";
-import { committedFileWarning, resolveSettings, SettingsError, type Settings } from "./settings.ts";
+import { buildArgLeakWarning, committedFileWarning, resolveSettings, SettingsError, type Settings } from "./settings.ts";
 
 const USAGE = `sprint-env: load Sprint secrets into a command's environment
 
-  sprint-env run [--explain] [--preserve-env=KEY,...] -- <command> [args...]
-  sprint-env pull [--preserve-env=KEY,...]
+  sprint-env run [--explain] -- <command> [args...]
+  sprint-env pull
 
 run    starts <command> with the secrets in its environment. Nothing is written to disk.
 pull   checks access and prints what run would load: key, source, kind. Never values.
 
 --explain        print the same table to stderr before starting <command>
---preserve-env   machine tokens only: keep these keys from the current environment
+
+Keys already in the environment always win over Sprint's values.
 
 Environment:
   SPRINT_TOKEN     a personal dev token (sprint_dev_...) or machine token (sprint_svc_...),
@@ -32,7 +33,6 @@ function fail(message: string): never {
 interface Args {
   cmd: "run" | "pull";
   explain: boolean;
-  preserve: Set<string>;
   command: string[];
 }
 
@@ -50,15 +50,14 @@ function parseArgs(argv: string[]): Args {
     process.exit(1);
   }
 
-  const args: Args = { cmd, explain: false, preserve: new Set(), command };
+  const args: Args = { cmd, explain: false, command };
   for (let i = 0; i < flags.length; i++) {
     const flag = flags[i];
     if (flag === "--explain") {
       args.explain = true;
     } else if (flag === "--preserve-env" || flag.startsWith("--preserve-env=")) {
-      const list = flag.includes("=") ? flag.slice(flag.indexOf("=") + 1) : flags[++i];
-      if (!list) fail("--preserve-env needs a comma-separated list of keys.");
-      for (const key of list.split(",")) if (key.trim()) args.preserve.add(key.trim());
+      // Accepted for old scripts; the environment always wins now.
+      if (!flag.includes("=")) i++;
     } else {
       fail(`unknown option ${flag}. Put the command after --.`);
     }
@@ -89,9 +88,6 @@ function warnBox(lines: string[]): void {
 }
 
 function report(merged: Merged): void {
-  for (const key of merged.preserved) {
-    process.stderr.write(`sprint-env: keeping ${key} from the environment (--preserve-env)\n`);
-  }
   for (const row of merged.rows) {
     if (row.source === "error") {
       process.stderr.write(`sprint-env: ${row.key} was not loaded: ${row.reason ?? "unavailable"}\n`);
@@ -104,12 +100,13 @@ async function load(args: Args): Promise<Merged | null> {
   try {
     // `sprint-env run -- next build` pulls for the build; `pull` explains everything.
     const phase = args.cmd === "run" ? detectPhase(process.env, ["node", ...args.command]) : null;
+    const leak = buildArgLeakWarning(process.env, phase);
+    if (leak) process.stderr.write(`sprint-env: ${leak}\n`);
     const pulled = await pull({ ...cfg, phase });
     return mergeEnv({
       pulled,
       shell: process.env,
       fileKeys: pulled.tokenKind === "personal" ? localFileKeys(process.cwd()) : new Set(),
-      preserve: args.preserve,
     });
   } catch (err) {
     if (!(err instanceof PullError)) throw err;

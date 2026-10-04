@@ -4,15 +4,17 @@ import { localFileKeys } from "./env-file.ts";
 import { mergeEnv, type ExplainRow } from "./merge.ts";
 import { detectPhase } from "./phase.ts";
 import type { Pulled } from "./pull.ts";
-import { committedFileWarning, resolveSettings, SettingsError } from "./settings.ts";
+import { buildArgLeakWarning, committedFileWarning, resolveSettings, SettingsError } from "./settings.ts";
 
 export type { ExplainRow } from "./merge.ts";
 
 export interface ConfigOptions {
   /** Where the local env files are. Defaults to process.cwd(). */
   cwd?: string;
-  /** Machine tokens only: keys the environment keeps even when Sprint defines them. */
+  /** @deprecated No effect since 0.3.1: the environment always wins. */
   preserveEnv?: string[];
+  /** Throw when there is no token instead of keeping the existing environment. Also SPRINT_ENV_REQUIRED=true. */
+  required?: boolean;
 }
 
 type WorkerResult = { ok: true; pulled: Pulled } | { ok: false; reason: "rejected" | "unavailable"; message: string };
@@ -72,10 +74,11 @@ function fetchSync(settings: { token: string; apiUrl: string; certPin?: string }
  * dotenv's config() loads a file. Call it before anything reads the
  * environment: at the top of next.config, vite.config, or the server entry.
  *
- * Dev token: keys already in process.env or the local .env files win; if Sprint
- * is down it warns and returns. Machine token: Sprint wins over process.env and
- * any failure throws, so a server never starts half-configured. No token:
- * returns, except under NODE_ENV=production, where it throws.
+ * Keys already in process.env win, and with a dev token so do the local .env
+ * files. Dev token: if Sprint is down it warns and returns. Machine token: any
+ * failure throws, so a server never starts half-configured. No token:
+ * warns and keeps the existing environment, in production too, unless
+ * `required` / SPRINT_ENV_REQUIRED=true, where it throws.
  *
  * Returns what was loaded and from where, never values; null when nothing was.
  */
@@ -91,13 +94,15 @@ export function config(options: ConfigOptions = {}): ExplainRow[] | null {
     throw err;
   }
   if (!settings) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("@sprint-logger/env: SPRINT_TOKEN is not set. Add the project's machine token to the host's environment.");
+    if (options.required ?? process.env.SPRINT_ENV_REQUIRED === "true") {
+      throw new Error("@sprint-logger/env: SPRINT_TOKEN is not set and SPRINT_ENV_REQUIRED is on. Add the project's machine token to the host's environment.");
     }
-    process.stderr.write("@sprint-logger/env: SPRINT_TOKEN is not set, so no Sprint secrets were loaded. Add your dev token to .env.local.\n");
+    process.stderr.write("@sprint-logger/env: SPRINT_TOKEN is not set, so no Sprint secrets were loaded; using the existing environment.\n");
     return null;
   }
   if (settings.committedFile) process.stderr.write(`@sprint-logger/env: ${committedFileWarning(settings.committedFile)}\n`);
+  const leak = buildArgLeakWarning(process.env, detectPhase(process.env, process.argv));
+  if (leak) process.stderr.write(`@sprint-logger/env: ${leak}\n`);
 
   const result = fetchSync(settings);
   if (!result.ok) {
@@ -112,12 +117,8 @@ export function config(options: ConfigOptions = {}): ExplainRow[] | null {
     pulled: result.pulled,
     shell: process.env,
     fileKeys: result.pulled.tokenKind === "personal" ? localFileKeys(cwd) : new Set(),
-    preserve: new Set(options.preserveEnv ?? process.env.SPRINT_PRESERVE_ENV?.split(",").map((k) => k.trim()) ?? []),
   });
   Object.assign(process.env, merged.inject, { [LOADED]: "1" });
-  for (const key of merged.preserved) {
-    process.stderr.write(`@sprint-logger/env: keeping ${key} from the environment (preserveEnv)\n`);
-  }
   for (const row of merged.rows) {
     if (row.source === "error") {
       process.stderr.write(`@sprint-logger/env: ${row.key} was not loaded: ${row.reason ?? "unavailable"}\n`);

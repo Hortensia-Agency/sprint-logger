@@ -34,7 +34,7 @@ Any other Node app: the same import as the first line of its server entry, or `r
 
 ```ts
 import { config } from "@sprint-logger/env";
-const rows = config({ preserveEnv: ["PORT"] }); // [{ key, source, kind }], never values
+const rows = config(); // [{ key, source, kind }], never values
 ```
 
 ## Build-time public variables
@@ -56,12 +56,12 @@ When none of these apply, the loader asks for everything. A server started some 
 
 For non-Node apps and CI steps, wrap the command instead:
 
-- `sprint-env run [--explain] [--preserve-env=KEY,…] -- <command> [args…]`: start `<command>` with the secrets loaded. Forwards signals and exits with the command's exit code.
-- `sprint-env pull [--preserve-env=KEY,…]`: check access and print what would load, as `KEY SOURCE KIND`. Never prints values.
+- `sprint-env run [--explain] -- <command> [args…]`: start `<command>` with the secrets loaded. Forwards signals and exits with the command's exit code.
+- `sprint-env pull`: check access and print what would load, as `KEY SOURCE KIND`. Never prints values.
 
 ## Tokens and precedence
 
-The token's prefix decides how values are merged.
+A key already in the environment always wins over Sprint's value, whichever token loads it.
 
 **Personal dev token (`sprint_dev_…`)**, one per developer per project, created on the Secrets page:
 
@@ -72,7 +72,9 @@ The token's prefix decides how values are merged.
 
 Keys you already define locally are left alone, so your framework loads them as usual. Keys you have no access to come back as `none` and are never loaded. If Sprint is unreachable, the loader prints a warning and continues with local values only. With no token at all it prints one line and loads nothing, so teammates without a token can still run the app.
 
-**Machine token (`sprint_svc_…`)**, for CI and servers, set as the host's `SPRINT_TOKEN` variable: Sprint's value wins over the environment, so a stale container variable cannot silently shadow the vault. `preserveEnv` / `SPRINT_PRESERVE_ENV` / `--preserve-env` keep listed keys from the environment and log one line per key on every start. If Sprint is unreachable or rejects the token, `config()` throws and the CLI exits 1, so the app never starts half-configured. Under `NODE_ENV=production`, a missing token also throws.
+**Machine token (`sprint_svc_…`)**, for CI and servers, set as the host's `SPRINT_TOKEN` variable: the host's own variables win over Sprint and the local `.env` files are not read, so Sprint fills in only what the host doesn't define. To move a key to Sprint, delete it from the host. If Sprint is unreachable or rejects the token, `config()` throws and the CLI exits 1, so the app never starts half-configured.
+
+**No token on a host** (production included): `config()` prints one line and loads nothing, and the app runs on the environment it already has. That makes the integration safe to merge before any host has a token; adding `SPRINT_TOKEN` to a host is what switches it over to Sprint, and from then on it fails closed as above. To make a missing token an error instead, set `SPRINT_ENV_REQUIRED=true` or pass `config({ required: true })`. The CLI (`sprint-env run` / `pull`) always exits 1 without a token.
 
 `--explain` sources: `shell`, `file`, `override`, `shared`, `proxy`, `dynamic`, `none`, `error`.
 
@@ -82,8 +84,12 @@ Keys you already define locally are left alone, so your framework loads them as 
 |---|---|
 | `SPRINT_TOKEN` | Personal or machine token, from the environment or the local `.env` files. `SPRINT_SERVICE_TOKEN` is read if it is unset. A token found in `.env` or `.env.development`, which projects often commit, gets a warning. |
 | `SPRINT_API_URL` | Defaults to `https://sprint.hortensia-agency.com`. |
-| `SPRINT_PRESERVE_ENV` | Machine tokens: comma-separated keys the environment keeps. Same as `preserveEnv`. |
+| `SPRINT_ENV_REQUIRED` | `true` makes a missing token throw instead of keeping the existing environment. Same as `required`. |
 | `SPRINT_CERT_PIN` | Optional base64 sha256 of the server's public key. The loader checks it before sending the token and refuses on mismatch. |
+
+## Build logs
+
+The loader never prints a value, only keys. What leaks is the host's own build variables: Coolify writes them into the Dockerfile as `ARG KEY=value` lines and prints that in the deploy log. In the Coolify app's **Environment Variables**, set **Build secrets** to **Docker BuildKit secrets**. Coolify then passes them with `--secret` and mounts them on each `RUN`, so they reach the build without being printed or baked into the image. In a Coolify build without it, the loader prints a reminder. With `SPRINT_TOKEN` as the host's only variable, it is the only one at stake.
 
 ## Not included
 

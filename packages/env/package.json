@@ -1,6 +1,6 @@
 {
   "name": "@sprint-logger/env",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Load a project's Sprint secrets into process.env, like dotenv: import \"@sprint-logger/env/config\". Nothing is written to disk.",
   "keywords": [
     "secrets",
@@ -48,7 +48,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=18"

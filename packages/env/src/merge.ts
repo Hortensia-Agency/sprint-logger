@@ -13,31 +13,26 @@ export interface ExplainRow {
 export interface Merged {
   inject: Record<string, string>;
   rows: ExplainRow[];
-  /** Machine keys kept from the shell because of --preserve-env. */
-  preserved: string[];
 }
 
 /**
  * Decide what reaches the child process.
  *
- * Personal (dev) token: shell > local env files > the developer's override >
- * the shared value. Local always wins, the way dotenv and Next already behave.
+ * The environment always wins, the way dotenv and Next already behave: a
+ * key the process already has is never replaced.
  *
- * Machine token: Sprint wins over the shell, so a stale container variable
- * cannot silently shadow the vault. `--preserve-env` is the explicit opt-out
- * per key. Env files are ignored: the injected value is already in the
- * environment, and frameworks never let a file override it.
+ * Personal (dev) token: shell > local env files > the developer's override >
+ * the shared value. Machine token: shell > Sprint; env files are not consulted,
+ * since a framework that loads them has already put them in the environment.
  */
 export function mergeEnv(args: {
   pulled: Pulled;
   shell: Record<string, string | undefined>;
   fileKeys: Set<string>;
-  preserve: Set<string>;
 }): Merged {
   const personal = args.pulled.tokenKind === "personal";
   const inject: Record<string, string> = {};
   const rows: ExplainRow[] = [];
-  const preserved: string[] = [];
 
   for (const v of args.pulled.vars) {
     const inShell = args.shell[v.key] !== undefined;
@@ -48,19 +43,16 @@ export function mergeEnv(args: {
       ...(v.reason ? { reason: v.reason } : {}),
     });
 
-    if (personal && inShell) {
+    if (inShell) {
       rows.push(row("shell"));
     } else if (personal && args.fileKeys.has(v.key)) {
       rows.push(row("file"));
-    } else if (!personal && inShell && args.preserve.has(v.key)) {
-      rows.push(row("shell"));
-      preserved.push(v.key);
     } else {
       if (v.value !== undefined) inject[v.key] = v.value;
       rows.push(row(v.source));
     }
   }
-  return { inject, rows, preserved };
+  return { inject, rows };
 }
 
 export function formatExplain(rows: ExplainRow[]): string {

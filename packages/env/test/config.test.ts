@@ -110,15 +110,12 @@ test("loads once per process tree", async () => {
   assert.equal(requests - before, 1);
 });
 
-test("machine token: Sprint beats the env unless preserveEnv", async () => {
-  const env = { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC, FOO: "stale", BAR: "stale" };
-  const plain = await run(`const rows = config();\n${PRINT}`, { env });
-  assert.equal(plain.code, 0, plain.stderr);
-  assert.deepEqual([JSON.parse(plain.stdout).FOO, JSON.parse(plain.stdout).BAR], ["vault-foo", "vault-bar"]);
-
-  const kept = await run(`const rows = config({ preserveEnv: ["FOO"] });\n${PRINT}`, { env });
-  assert.deepEqual([JSON.parse(kept.stdout).FOO, JSON.parse(kept.stdout).BAR], ["stale", "vault-bar"]);
-  assert.match(kept.stderr, /keeping FOO from the environment/);
+test("machine token: the environment beats Sprint", async () => {
+  const r = await run(`const rows = config();\n${PRINT}`, { env: { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC, FOO: "from-host" } });
+  assert.equal(r.code, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual([out.FOO, out.BAR], ["from-host", "vault-bar"]);
+  assert.equal(out.rows.find((row: { key: string }) => row.key === "FOO").source, "shell");
 });
 
 test("Sprint down: a dev token warns and continues, a machine token throws", async () => {
@@ -138,14 +135,31 @@ test("a rejected token throws", async () => {
   assert.match(r.stderr, /rejected the token/);
 });
 
-test("no token: warns in development, throws in production", async () => {
-  const dev = await run(`const rows = config();\n${PRINT}`);
-  assert.equal(dev.code, 0, dev.stderr);
-  assert.match(dev.stderr, /SPRINT_TOKEN is not set/);
+test("no token: warns and keeps the existing environment, in production too", async () => {
+  for (const env of [{}, { NODE_ENV: "production", FOO: "from-host" }] as Record<string, string>[]) {
+    const r = await run(`const rows = config();\n${PRINT}`, { env });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stderr, /SPRINT_TOKEN is not set, so no Sprint secrets were loaded; using the existing environment\./);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.rows, null);
+    assert.equal(out.FOO, env.FOO);
+  }
+});
 
-  const prod = await run(`config();`, { env: { NODE_ENV: "production" } });
-  assert.equal(prod.code, 1);
-  assert.match(prod.stderr, /machine token/);
+test("no token with SPRINT_ENV_REQUIRED=true or required: throws", async () => {
+  const flag = await run(`config();`, { env: { NODE_ENV: "production", SPRINT_ENV_REQUIRED: "true" } });
+  assert.equal(flag.code, 1);
+  assert.match(flag.stderr, /SPRINT_TOKEN is not set and SPRINT_ENV_REQUIRED is on/);
+
+  const option = await run(`config({ required: true });`);
+  assert.equal(option.code, 1);
+  assert.match(option.stderr, /SPRINT_TOKEN is not set/);
+});
+
+test("token present in production: Sprint unreachable still throws", async () => {
+  const r = await run(`config();`, { env: { NODE_ENV: "production", SPRINT_API_URL: downUrl, SPRINT_TOKEN: SVC } });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /unreachable/);
 });
 
 test("a token in .env gets a move-it warning", async () => {
@@ -163,4 +177,17 @@ test("sends the phase it detects, so Sprint can leave out build-only or run-time
   const plain = await run(`const rows = config();\n${PRINT}`, { env: { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC } });
   assert.equal(plain.code, 0, plain.stderr);
   assert.equal(lastPhase, null);
+});
+
+test("a Coolify build without BuildKit secrets warns that the token is in the deploy log", async () => {
+  const base = { SPRINT_API_URL: apiUrl, SPRINT_TOKEN: SVC, SPRINT_PHASE: "build", COOLIFY_RESOURCE_UUID: "abc" };
+  const leaky = await run(`config();`, { env: base });
+  assert.equal(leaky.code, 0, leaky.stderr);
+  assert.match(leaky.stderr, /set Build secrets to Docker BuildKit secrets/);
+  assert.ok(!leaky.stderr.includes(SVC));
+
+  const sealed = await run(`config();`, { env: { ...base, COOLIFY_BUILD_SECRETS_HASH: "h" } });
+  assert.doesNotMatch(sealed.stderr, /BuildKit/);
+  const runtime = await run(`config();`, { env: { ...base, SPRINT_PHASE: "runtime" } });
+  assert.doesNotMatch(runtime.stderr, /BuildKit/);
 });
