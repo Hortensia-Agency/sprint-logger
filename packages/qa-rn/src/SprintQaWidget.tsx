@@ -44,7 +44,7 @@ import { SprintQaClient } from "./client";
 import { hostMatches, passesL0, isPatShape, resolveHostKey } from "./config";
 import { loadPat, savePat } from "./storage";
 import type { HostContext } from "./context";
-import type { WidgetConfig } from "./contract";
+import type { CaptureProfile, WidgetConfig } from "./contract";
 
 type Screen = "report" | "queue" | "detail";
 
@@ -152,6 +152,9 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
   const [open, setOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>("report");
   const [taskId, setTaskId] = useState<number | null>(null);
+  // From /api/widget/me once signed in. A widget reporter gets the report form
+  // only; the server 404s them on the queue and detail routes anyway.
+  const [me, setMe] = useState<{ reportOnly: boolean; captureProfile: CaptureProfile } | null>(null);
 
   // ── Runtime evaluation: host backend → key → Sprint L1/L2 ──────────────
   // Re-runnable so the host backend flipping enabled/key (or repointing the
@@ -242,6 +245,27 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
     };
   }, [client]);
 
+  useEffect(() => {
+    if (!client || !hasPat) return;
+    let alive = true;
+    client
+      .me()
+      .then((m) => {
+        if (!alive) return;
+        setMe({
+          reportOnly: m.role === "reporter" || m.user.tier === "client",
+          captureProfile: m.captureProfile ?? "standard",
+        });
+      })
+      .catch(() => {
+        // Unknown identity: show the report form only and capture strictly.
+        if (alive) setMe({ reportOnly: true, captureProfile: "strict" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, hasPat]);
+
   function onPatSubmit(pat: string) {
     client?.setPat(pat);
     void savePat(pat);
@@ -268,7 +292,8 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
           oauthDeps={props.oauthDeps}
         />
       );
-    if (screen === "detail" && taskId != null) {
+    const reportOnly = me?.reportOnly ?? true;
+    if (!reportOnly && screen === "detail" && taskId != null) {
       return (
         <DetailView
           client={activeClient}
@@ -277,7 +302,7 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
         />
       );
     }
-    if (screen === "queue") {
+    if (!reportOnly && screen === "queue") {
       return (
         <QueueView
           client={activeClient}
@@ -290,12 +315,14 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
     }
     return (
       <>
-        <Tabs screen={screen} onChange={setScreen} />
+        {!reportOnly && <Tabs screen={screen} onChange={setScreen} />}
         <ReportView
           client={activeClient}
           captureScreenshot={props.captureScreenshot}
           audioRecorder={recorderRef.current}
           getContext={props.getContext}
+          reportOnly={reportOnly}
+          captureProfile={me?.captureProfile ?? "strict"}
           onReported={() => setOpen(false)}
         />
       </>

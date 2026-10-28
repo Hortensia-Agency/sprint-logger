@@ -15,7 +15,7 @@
  */
 
 import { Dimensions, Platform } from "react-native";
-import type { ReportInput } from "./contract";
+import type { CaptureProfile, ReportInput } from "./contract";
 
 /** What the host can hand the widget at report time. All fields optional. */
 export interface HostContext {
@@ -40,13 +40,15 @@ export function nativeViewport(): { w: number; h: number } {
 /**
  * Merge SDK-captured context with host-supplied context into the existing
  * ReportInput shape. `extra` is serialized into consoleErrors (the only
- * free-text array the server stores) so nothing is silently dropped.
+ * free-text array the server stores) so nothing is silently dropped. A strict
+ * profile drops `extra`: the host can put anything there, storage included.
  */
 export function buildContext(
   base: { title: string; description?: string; severity: ReportInput["severity"] },
-  host?: HostContext
+  host?: HostContext,
+  profile: CaptureProfile = "standard"
 ): ReportInput {
-  const extra = host?.extra
+  const extra = profile === "standard" && host?.extra
     ? Object.entries(host.extra).map(([k, val]) => `${k}: ${val}`)
     : undefined;
   return {

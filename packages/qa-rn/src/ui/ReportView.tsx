@@ -10,7 +10,7 @@ import {
 import { theme, severityColor } from "./theme";
 import { buildContext, type HostContext } from "../context";
 import type { SprintQaClient } from "../client";
-import type { Severity } from "../contract";
+import type { CaptureProfile, Severity } from "../contract";
 import type { AudioRecorder, AudioPart } from "../audio";
 import {
   pickDemoVideo,
@@ -35,12 +35,17 @@ export function ReportView({
   captureScreenshot,
   audioRecorder,
   getContext,
+  reportOnly = false,
+  captureProfile = "standard",
 }: {
   client: SprintQaClient;
   onReported: (taskId: number) => void;
   captureScreenshot?: () => Promise<{ uri: string; name: string; type: string } | null>;
   audioRecorder?: AudioRecorder | null;
   getContext?: () => HostContext | undefined;
+  /** A widget reporter: no severity picker, and a held ticket gets a confirmation. */
+  reportOnly?: boolean;
+  captureProfile?: CaptureProfile;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -57,6 +62,9 @@ export function ReportView({
   // Set once the report itself lands, so a retry after a failed video upload
   // never files the bug twice — it only re-attempts the video.
   const reportedId = useRef<number | null>(null);
+  // Set when the server held the ticket for review; the sheet stays open to say so.
+  const [heldId, setHeldId] = useState<number | null>(null);
+  const held = useRef(false);
 
   const clearRecTimers = () => {
     if (recTimer.current) clearInterval(recTimer.current);
@@ -123,13 +131,15 @@ export function ReportView({
             description: description.trim() || undefined,
             severity,
           },
-          getContext?.()
+          getContext?.(),
+          captureProfile
         );
         // Flush an in-progress recording before filing so it isn't lost.
         const voiceNote = recording ? await stopRecording() : audio;
         const res = await client.report(body);
         bugTaskId = res.bugTaskId;
         reportedId.current = bugTaskId;
+        held.current = !!res.held;
         if (withShot && captureScreenshot) {
           const shot = await captureScreenshot();
           if (shot) {
@@ -158,12 +168,30 @@ export function ReportView({
         }
       }
       reportedId.current = null;
-      onReported(bugTaskId);
+      if (held.current) setHeldId(bugTaskId);
+      else onReported(bugTaskId);
     } catch {
       setError("Couldn't file the report. Check your token and try again.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (heldId !== null) {
+    return (
+      <View style={styles.wrap}>
+        <Text style={styles.sentText}>
+          Sent. A team member will review it before it reaches the board.
+        </Text>
+        <Pressable
+          style={styles.submit}
+          onPress={() => onReported(heldId)}
+          accessibilityRole="button"
+        >
+          <Text style={styles.submitText}>Done</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   return (
@@ -189,8 +217,8 @@ export function ReportView({
         maxLength={50000}
       />
 
-      <Text style={styles.label}>Severity</Text>
-      <View style={styles.row}>
+      {!reportOnly && <Text style={styles.label}>Severity</Text>}
+      {!reportOnly && <View style={styles.row}>
         {SEVERITIES.map((s) => {
           const active = s === severity;
           return (
@@ -209,7 +237,7 @@ export function ReportView({
             </Pressable>
           );
         })}
-      </View>
+      </View>}
 
       {captureScreenshot && (
         <Pressable style={styles.checkboxRow} onPress={() => setWithShot((v) => !v)}>
@@ -333,6 +361,7 @@ const styles = StyleSheet.create({
   audioLabel: { color: theme.fg, fontSize: 13 },
   audioRemove: { color: theme.destructive, fontSize: 13 },
   error: { color: theme.destructive, fontSize: 13, marginTop: 4 },
+  sentText: { color: theme.fg, fontSize: 15, lineHeight: 21, marginTop: 8 },
   submit: {
     backgroundColor: theme.primary,
     borderRadius: theme.radiusSm,

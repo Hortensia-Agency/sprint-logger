@@ -34,11 +34,16 @@ export interface WidgetConfig {
   signoffPolicy: SignoffPolicy;
 }
 
-/** GET /api/widget/me */
+/** How much a report may capture; widget reporters get a strict profile. */
+export type CaptureProfile = "standard" | "strict" | "strict_text";
+
+/** GET /api/widget/me. `role` and `captureProfile` are absent on older servers. */
 export interface WidgetMe {
-  id: string;
-  name: string | null;
-  email: string | null;
+  user: { id: string; name: string | null; email: string | null; tier: string | null };
+  canQa: boolean;
+  blocked: boolean;
+  role?: "member" | "reporter";
+  captureProfile?: CaptureProfile;
 }
 
 /** A row in GET /api/widget/queue */
@@ -73,6 +78,8 @@ export interface ReportInput {
 export interface ReportResponse {
   bugTaskId: number;
   state: TaskState;
+  /** True when the ticket waits for a team member's review before it reaches the board. */
+  held?: boolean;
 }
 
 /** POST /api/widget/tasks/:id/attachments response */
