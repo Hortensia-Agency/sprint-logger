@@ -17,11 +17,35 @@ import {
   videoAttachAvailable,
 } from "../video";
 
+interface Transcript {
+  state: "transcribing" | "done" | "failed" | "parked" | "canceled";
+  text: string | null;
+  parkReason: "disabled" | "over_cap" | "provider_auth" | null;
+  failedReason: "too_long" | "error" | null;
+}
+
 interface AudioNote {
   id: number;
   filename: string;
   mimeType: string;
   url: string;
+  /** Absent on servers older than transcription. */
+  transcript?: Transcript | null;
+}
+
+const PARKED: Record<NonNullable<Transcript["parkReason"]>, string> = {
+  disabled: "Not transcribed: transcription is off for this workspace.",
+  over_cap: "Waiting: this month's transcription limit is reached.",
+  provider_auth: "Waiting: the transcription provider refused our key.",
+};
+
+function transcriptLine(t: Transcript): string {
+  if (t.state === "done") return t.text || "No speech found in this note.";
+  if (t.state === "transcribing") return "Transcribing";
+  if (t.state === "parked") return PARKED[t.parkReason ?? "disabled"];
+  return t.failedReason === "too_long"
+    ? "Not transcribed: voice notes are limited to 2 minutes."
+    : "Transcription failed.";
 }
 
 interface TaskDetail {
@@ -118,7 +142,17 @@ export function DetailView({
         <View style={styles.audioWrap}>
           <Text style={styles.audioHeading}>Voice notes</Text>
           {data.audioNotes.map((a) => (
-            <AudioNotePlayer key={a.id} url={a.url} />
+            <View key={a.id}>
+              <AudioNotePlayer url={a.url} />
+              {a.transcript && a.transcript.state !== "canceled" ? (
+                <Text
+                  style={a.transcript.state === "done" ? styles.transcript : styles.transcriptMuted}
+                  selectable={a.transcript.state === "done"}
+                >
+                  {transcriptLine(a.transcript)}
+                </Text>
+              ) : null}
+            </View>
           ))}
         </View>
       )}
@@ -255,6 +289,8 @@ const styles = StyleSheet.create({
   desc: { color: theme.fg, fontSize: 14, marginTop: 12, lineHeight: 20 },
   audioWrap: { marginTop: 16, gap: 6 },
   audioHeading: { color: theme.muted, fontSize: 12 },
+  transcript: { color: theme.fg, fontSize: 14, lineHeight: 20, marginTop: 4, marginBottom: 8 },
+  transcriptMuted: { color: theme.muted, fontSize: 13, marginTop: 4, marginBottom: 8 },
   audioBtn: {
     borderWidth: 1,
     borderColor: theme.borderSolid,
