@@ -1,16 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-import { theme, severityColor } from "./theme";
+import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
+import { severityColor, useTheme, useThemedStyles, type Theme } from "./theme";
 import { buildContext, type HostContext } from "../context";
 import type { SprintQaClient } from "../client";
-import type { CaptureProfile, Severity } from "../contract";
+import type { CaptureProfile, Severity, WidgetAppearance } from "../contract";
 import type { AudioRecorder, AudioPart } from "../audio";
 import {
   pickDemoVideo,
@@ -20,6 +13,7 @@ import {
 } from "../video";
 
 const SEVERITIES: Severity[] = ["low", "medium", "high", "blocker"];
+const SEV_LABEL: Record<Severity, string> = { low: "Low", medium: "Medium", high: "High", blocker: "Blocker" };
 const AUDIO_MAX_SECONDS = 120; // 2-minute soft cap
 
 function fmtDuration(sec: number): string {
@@ -37,6 +31,7 @@ export function ReportView({
   getContext,
   reportOnly = false,
   captureProfile = "standard",
+  copy,
 }: {
   client: SprintQaClient;
   onReported: (taskId: number) => void;
@@ -46,13 +41,18 @@ export function ReportView({
   /** A widget reporter: no severity picker, and a held ticket gets a confirmation. */
   reportOnly?: boolean;
   captureProfile?: CaptureProfile;
+  /** The project's own wording, from Sprint's Appearance settings. */
+  copy?: WidgetAppearance["copy"];
 }) {
+  const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<Severity>("medium");
   const [withShot, setWithShot] = useState(!!captureScreenshot);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focus, setFocus] = useState<"title" | "desc" | null>(null);
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
   const [audio, setAudio] = useState<AudioPart | null>(null);
@@ -60,10 +60,10 @@ export function ReportView({
   const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const recCap = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set once the report itself lands, so a retry after a failed video upload
-  // never files the bug twice — it only re-attempts the video.
+  // never files the bug twice: it only re-attempts the video.
   const reportedId = useRef<number | null>(null);
-  // Set when the server held the ticket for review; the sheet stays open to say so.
-  const [heldId, setHeldId] = useState<number | null>(null);
+  // Set once a widget reporter's ticket lands; the sheet stays open to say so.
+  const [sent, setSent] = useState<{ id: number; held: boolean } | null>(null);
   const held = useRef(false);
 
   const clearRecTimers = () => {
@@ -93,7 +93,7 @@ export function ReportView({
     try {
       await audioRecorder.start();
     } catch {
-      setError("Microphone access denied — allow it to record a voice note.");
+      setError("Microphone access is off. Allow it in Settings to record a voice note.");
       return;
     }
     setAudio(null);
@@ -117,7 +117,7 @@ export function ReportView({
 
   async function submit() {
     if (!title.trim()) {
-      setError("Title is required");
+      setError("Add a title so the team knows what this is about.");
       return;
     }
     setSubmitting(true);
@@ -162,30 +162,33 @@ export function ReportView({
         } catch (e) {
           setError(
             (e instanceof Error ? e.message : "Video upload failed.") +
-              " Your bug IS filed — tap File bug to retry the video."
+              " Your report is sent; tap Send report to retry the video."
           );
           return;
         }
       }
       reportedId.current = null;
-      if (held.current) setHeldId(bugTaskId);
+      // A member lands back on the app; a reporter gets a word that it arrived.
+      if (held.current || reportOnly) setSent({ id: bugTaskId, held: held.current });
       else onReported(bugTaskId);
     } catch {
-      setError("Couldn't file the report. Check your token and try again.");
+      setError("Couldn't send the report. Check your connection and try again.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (heldId !== null) {
+  if (sent !== null) {
     return (
-      <View style={styles.wrap}>
+      <View style={styles.wrap} accessibilityLiveRegion="polite">
         <Text style={styles.sentText}>
-          Sent. A team member will review it before it reaches the board.
+          {sent.held
+            ? "Sent. A team member will review it before it reaches the board."
+            : copy?.thanks ?? "Sent. The team has it."}
         </Text>
         <Pressable
-          style={styles.submit}
-          onPress={() => onReported(heldId)}
+          style={({ pressed }) => [styles.submit, pressed && styles.pressed]}
+          onPress={() => onReported(sent.id)}
           accessibilityRole="button"
         >
           <Text style={styles.submitText}>Done</Text>
@@ -194,180 +197,233 @@ export function ReportView({
     );
   }
 
+  const placeholder = theme.c["subtle-foreground"];
   return (
     <View style={styles.wrap}>
-      <Text style={styles.label}>Title</Text>
+      {copy?.intro ? <Text style={styles.intro}>{copy.intro}</Text> : null}
+      <Text style={styles.label} nativeID="sq-title">Title</Text>
       <TextInput
-        style={styles.input}
+        style={[styles.input, focus === "title" && styles.inputFocus]}
         value={title}
         onChangeText={setTitle}
-        placeholder="What's broken?"
-        placeholderTextColor={theme.muted}
+        onFocus={() => setFocus("title")}
+        onBlur={() => setFocus(null)}
+        placeholder="What went wrong?"
+        placeholderTextColor={placeholder}
         maxLength={500}
+        accessibilityLabelledBy="sq-title"
       />
 
-      <Text style={styles.label}>Description</Text>
+      <Text style={styles.label} nativeID="sq-desc">Details</Text>
       <TextInput
-        style={[styles.input, styles.multiline]}
+        style={[styles.input, styles.multiline, focus === "desc" && styles.inputFocus]}
         value={description}
         onChangeText={setDescription}
-        placeholder="Steps to reproduce, expected vs actual…"
-        placeholderTextColor={theme.muted}
+        onFocus={() => setFocus("desc")}
+        onBlur={() => setFocus(null)}
+        placeholder="What you did, what you expected, what happened"
+        placeholderTextColor={placeholder}
         multiline
         maxLength={50000}
+        accessibilityLabelledBy="sq-desc"
       />
 
-      {!reportOnly && <Text style={styles.label}>Severity</Text>}
-      {!reportOnly && <View style={styles.row}>
-        {SEVERITIES.map((s) => {
-          const active = s === severity;
-          return (
-            <Pressable
-              key={s}
-              onPress={() => setSeverity(s)}
-              style={[
-                styles.sevChip,
-                {
-                  borderColor: severityColor[s],
-                  backgroundColor: active ? severityColor[s] : "transparent",
-                },
-              ]}
-            >
-              <Text style={[styles.sevText, active && { color: "#fff" }]}>{s}</Text>
-            </Pressable>
-          );
-        })}
-      </View>}
+      {!reportOnly && (
+        <>
+          <Text style={styles.label}>Severity</Text>
+          <View style={styles.segment} accessibilityRole="radiogroup">
+            {SEVERITIES.map((s) => {
+              const active = s === severity;
+              return (
+                <Pressable
+                  key={s}
+                  onPress={() => setSeverity(s)}
+                  style={[styles.segItem, active && styles.segItemOn]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: active }}
+                >
+                  <View style={[styles.sevDot, { backgroundColor: severityColor(theme, s) }]} />
+                  <Text style={[styles.segText, active && styles.segTextOn]}>{SEV_LABEL[s]}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
 
       {captureScreenshot && (
-        <Pressable style={styles.checkboxRow} onPress={() => setWithShot((v) => !v)}>
-          <View style={[styles.checkbox, withShot && styles.checkboxOn]} />
-          <Text style={styles.checkboxLabel}>Attach a screenshot of this screen</Text>
+        <Pressable
+          style={styles.checkRow}
+          onPress={() => setWithShot((v) => !v)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: withShot }}
+        >
+          <View style={[styles.checkbox, withShot && styles.checkboxOn]}>
+            {withShot ? <Text style={styles.checkMark}>✓</Text> : null}
+          </View>
+          <Text style={styles.checkLabel}>Attach a screenshot of this screen</Text>
         </Pressable>
       )}
 
-      {audioRecorder && (
-        <View>
-          <Text style={styles.label}>Voice note</Text>
-          <Pressable
-            style={[styles.recBtn, recording && styles.recBtnOn]}
-            onPress={() => (recording ? void stopRecording() : void startRecording())}
-          >
-            <Text style={[styles.recText, recording && styles.recTextOn]}>
-              {recording
-                ? `◼ Stop (${fmtDuration(recSeconds)})`
-                : audio
-                  ? "🎙 Re-record voice note"
-                  : "🎙 Record voice note"}
-            </Text>
-          </Pressable>
-          {audio && !recording && (
-            <View style={styles.audioRow}>
-              <Text style={styles.audioLabel}>🎙 Voice note attached</Text>
-              <Pressable onPress={() => setAudio(null)}>
-                <Text style={styles.audioRemove}>Remove</Text>
-              </Pressable>
-            </View>
-          )}
-        </View>
-      )}
-
-      {videoAttachAvailable() && (
-        <View>
-          <Text style={styles.label}>Demo video</Text>
-          <Pressable style={styles.recBtn} onPress={() => void pickVideo()}>
-            <Text style={styles.recText}>
-              {video ? "🎬 Pick a different video" : "🎬 Attach video"}
-            </Text>
-          </Pressable>
-          {video && (
-            <View style={styles.audioRow}>
-              <Text style={styles.audioLabel} numberOfLines={1}>
-                🎬 {video.name} · {(video.sizeBytes / 1024 / 1024).toFixed(1)} MB
+      {(audioRecorder || videoAttachAvailable()) && (
+        <View style={styles.attachRow}>
+          {audioRecorder && (
+            <Pressable
+              style={({ pressed }) => [styles.ghost, recording && styles.ghostRec, pressed && styles.pressed]}
+              onPress={() => (recording ? void stopRecording() : void startRecording())}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.ghostText, recording && styles.ghostTextRec]}>
+                {recording ? `Stop  ${fmtDuration(recSeconds)}` : audio ? "Record again" : "Record a voice note"}
               </Text>
-              <Pressable onPress={() => setVideo(null)}>
-                <Text style={styles.audioRemove}>Remove</Text>
-              </Pressable>
-            </View>
+            </Pressable>
+          )}
+          {videoAttachAvailable() && (
+            <Pressable
+              style={({ pressed }) => [styles.ghost, pressed && styles.pressed]}
+              onPress={() => void pickVideo()}
+              accessibilityRole="button"
+            >
+              <Text style={styles.ghostText}>{video ? "Pick another video" : "Attach a video"}</Text>
+            </Pressable>
           )}
         </View>
       )}
+      {audio && !recording && (
+        <Attached label="Voice note" onRemove={() => setAudio(null)} />
+      )}
+      {video && (
+        <Attached
+          label={`${video.name}, ${(video.sizeBytes / 1024 / 1024).toFixed(1)} MB`}
+          onRemove={() => setVideo(null)}
+        />
+      )}
 
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && (
+        <Text style={styles.error} accessibilityLiveRegion="polite">
+          {error}
+        </Text>
+      )}
 
       <Pressable
-        style={[styles.submit, submitting && { opacity: 0.6 }]}
+        style={({ pressed }) => [styles.submit, (submitting || pressed) && styles.pressed]}
         onPress={submit}
         disabled={submitting}
+        accessibilityRole="button"
+        accessibilityState={{ busy: submitting }}
       >
         {submitting ? (
-          <ActivityIndicator color={theme.primaryFg} />
+          <ActivityIndicator color={theme.c["signal-foreground"]} />
         ) : (
-          <Text style={styles.submitText}>File bug</Text>
+          <Text style={styles.submitText}>{copy?.submit ?? "Send report"}</Text>
         )}
       </Pressable>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { gap: 8 },
-  label: { color: theme.muted, fontSize: 12, marginTop: 8 },
-  input: {
-    backgroundColor: theme.bg,
-    borderWidth: 1,
-    borderColor: theme.borderSolid,
-    borderRadius: theme.radiusSm,
-    color: theme.fg,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  multiline: { minHeight: 80, textAlignVertical: "top" },
-  row: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  sevChip: {
-    borderWidth: 1,
-    borderRadius: theme.radiusSm,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  sevText: { color: theme.fg, fontSize: 13, textTransform: "capitalize" },
-  checkboxRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: theme.muted,
-  },
-  checkboxOn: { backgroundColor: theme.primary, borderColor: theme.primary },
-  checkboxLabel: { color: theme.fg, fontSize: 13 },
-  recBtn: {
-    borderWidth: 1,
-    borderColor: theme.borderSolid,
-    borderRadius: theme.radiusSm,
-    paddingVertical: 10,
-    alignItems: "center",
-    marginTop: 4,
-  },
-  recBtnOn: { borderColor: theme.destructive },
-  recText: { color: theme.fg, fontSize: 14, fontWeight: "600" },
-  recTextOn: { color: theme.destructive },
-  audioRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 6,
-  },
-  audioLabel: { color: theme.fg, fontSize: 13 },
-  audioRemove: { color: theme.destructive, fontSize: 13 },
-  error: { color: theme.destructive, fontSize: 13, marginTop: 4 },
-  sentText: { color: theme.fg, fontSize: 15, lineHeight: 21, marginTop: 8 },
-  submit: {
-    backgroundColor: theme.primary,
-    borderRadius: theme.radiusSm,
-    paddingVertical: 12,
-    alignItems: "center",
-    marginTop: 12,
-  },
-  submitText: { color: theme.primaryFg, fontWeight: "700", fontSize: 15 },
-});
+function Attached({ label, onRemove }: { label: string; onRemove: () => void }) {
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.chip}>
+      <Text style={styles.chipText} numberOfLines={1}>
+        {label}
+      </Text>
+      <Pressable onPress={onRemove} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Remove ${label}`}>
+        <Text style={styles.chipRemove}>Remove</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function makeStyles(t: Theme) {
+  return {
+    wrap: { gap: 6, paddingBottom: 8 },
+    intro: { color: t.c["muted-foreground"], fontSize: 14, lineHeight: 20, marginBottom: 4 },
+    label: { color: t.c["muted-foreground"], fontSize: 13, fontWeight: "500" as const, marginTop: 10 },
+    input: {
+      backgroundColor: t.c.input,
+      borderWidth: 1,
+      borderColor: t.c.border,
+      borderRadius: t.radius.md,
+      color: t.c.foreground,
+      fontSize: 16,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    inputFocus: { borderColor: t.c.ring, shadowColor: t.c.ring, shadowOpacity: 0.25, shadowRadius: 3 },
+    multiline: { minHeight: 96, textAlignVertical: "top" as const },
+    segment: {
+      flexDirection: "row" as const,
+      padding: 2,
+      borderRadius: t.radius.md,
+      borderWidth: 1,
+      borderColor: t.c.border,
+      backgroundColor: t.c["bg-elev-1"],
+    },
+    segItem: {
+      flex: 1,
+      minHeight: 36,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      gap: 6,
+      borderRadius: t.radius.sm,
+    },
+    segItemOn: { backgroundColor: t.c["bg-hover"] },
+    segText: { color: t.c["muted-foreground"], fontSize: 13, fontWeight: "500" as const },
+    segTextOn: { color: t.c.foreground },
+    sevDot: { width: 7, height: 7, borderRadius: 4 },
+    checkRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, minHeight: 44, marginTop: 4 },
+    checkbox: {
+      width: 20,
+      height: 20,
+      borderRadius: t.radius.sm,
+      borderWidth: 1.5,
+      borderColor: t.c["border-strong"],
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+    },
+    checkboxOn: { backgroundColor: t.c.signal, borderColor: t.c.signal },
+    checkMark: { color: t.c["signal-foreground"], fontSize: 13, fontWeight: "700" as const },
+    checkLabel: { color: t.c.foreground, fontSize: 15 },
+    attachRow: { flexDirection: "row" as const, gap: 8 },
+    ghost: {
+      flex: 1,
+      minHeight: 44,
+      borderWidth: 1,
+      borderColor: t.c.border,
+      borderRadius: t.radius.md,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      paddingHorizontal: 10,
+    },
+    ghostRec: { borderColor: t.c.destructive, backgroundColor: t.c["destructive-soft"] },
+    ghostText: { color: t.c.foreground, fontSize: 14, fontWeight: "500" as const },
+    ghostTextRec: { color: t.c.destructive },
+    chip: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      gap: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: t.radius.md,
+      backgroundColor: t.c["bg-elev-2"],
+    },
+    chipText: { flex: 1, color: t.c.foreground, fontSize: 14 },
+    chipRemove: { color: t.c.destructive, fontSize: 14, fontWeight: "500" as const },
+    error: { color: t.c.destructive, fontSize: 14, lineHeight: 20, marginTop: 6 },
+    sentText: { color: t.c.foreground, fontSize: 17, lineHeight: 24, marginTop: 8 },
+    submit: {
+      minHeight: 48,
+      backgroundColor: t.c.signal,
+      borderRadius: t.radius.md,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      marginTop: 14,
+    },
+    submitText: { color: t.c["signal-foreground"], fontWeight: "600" as const, fontSize: 16 },
+    pressed: { opacity: 0.85 },
+  };
+}

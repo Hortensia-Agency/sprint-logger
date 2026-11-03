@@ -1,14 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-import { theme } from "./theme";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { stateColor, useTheme, useThemedStyles, type Theme } from "./theme";
+import { stateLabel } from "./QueueView";
 import type { SprintQaClient } from "../client";
 import { ExpoAudio } from "../optional-deps";
 import {
@@ -64,6 +57,8 @@ export function DetailView({
   taskId: number;
   onBack: () => void;
 }) {
+  const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [data, setData] = useState<TaskDetail | null>(null);
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -123,17 +118,29 @@ export function DetailView({
   }
 
   if (error) return <Text style={styles.empty}>Couldn&apos;t load this task.</Text>;
-  if (!data) return <ActivityIndicator color={theme.primary} style={{ marginTop: 24 }} />;
+  if (!data) {
+    return (
+      <View style={{ gap: 10, marginTop: 8 }} accessibilityLabel="Loading the task">
+        <View style={[styles.skeleton, { height: 12, width: 60 }]} />
+        <View style={[styles.skeleton, { height: 18, width: "80%" }]} />
+        <View style={[styles.skeleton, { height: 12, width: "40%" }]} />
+        <View style={[styles.skeleton, { height: 64 }]} />
+      </View>
+    );
+  }
 
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-      <Pressable onPress={onBack}>
-        <Text style={styles.back}>← Queue</Text>
+      <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" style={styles.backHit}>
+        <Text style={styles.back}>‹ Queue</Text>
       </Pressable>
       <Text style={styles.title}>{data.task.title}</Text>
-      <Text style={styles.state}>
-        {data.task.state.replace(/_/g, " ")} · {data.activeVerifiedCount} verified
-      </Text>
+      <View style={styles.stateRow}>
+        <View style={[styles.ring, { borderColor: stateColor(theme, data.task.state) }]} />
+        <Text style={styles.state}>
+          {stateLabel(data.task.state)}, {data.activeVerifiedCount} verified
+        </Text>
+      </View>
       {data.task.description ? (
         <Text style={styles.desc}>{data.task.description}</Text>
       ) : null}
@@ -163,7 +170,7 @@ export function DetailView({
           <Text style={styles.audioHeading}>Demo videos</Text>
           {data.demoVideos?.map((v) => (
             <Text key={v.id} style={styles.videoRow} numberOfLines={1}>
-              🎬 {v.filename}
+              {v.filename}
             </Text>
           ))}
           {videoAttachAvailable() && (
@@ -171,9 +178,10 @@ export function DetailView({
               style={[styles.audioBtn, videoBusy && { opacity: 0.5 }]}
               onPress={() => void attachVideo()}
               disabled={videoBusy}
+              accessibilityRole="button"
             >
               <Text style={styles.audioBtnText}>
-                {videoBusy ? "Uploading…" : "🎬 Attach demo video"}
+                {videoBusy ? "Uploading…" : "Attach a demo video"}
               </Text>
             </Pressable>
           )}
@@ -185,28 +193,30 @@ export function DetailView({
         style={styles.input}
         value={notes}
         onChangeText={setNotes}
-        placeholder="Verdict notes (optional)"
-        placeholderTextColor={theme.muted}
+        placeholder="Notes for the team (optional)"
+        placeholderTextColor={theme.c["subtle-foreground"]}
         multiline
       />
 
       <View style={styles.actions}>
-        <Pressable style={[styles.btn, styles.btnGhost]} onPress={take} disabled={busy}>
+        <Pressable style={[styles.btn, styles.btnGhost]} onPress={take} disabled={busy} accessibilityRole="button">
           <Text style={styles.btnGhostText}>Take</Text>
         </Pressable>
         <Pressable
-          style={[styles.btn, { backgroundColor: theme.success }]}
-          onPress={() => verify("verified")}
-          disabled={busy}
-        >
-          <Text style={styles.btnText}>Verify</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.btn, { backgroundColor: theme.destructive }]}
+          style={[styles.btn, styles.btnDanger]}
           onPress={() => verify("bug_found")}
           disabled={busy}
+          accessibilityRole="button"
         >
-          <Text style={styles.btnText}>Bug found</Text>
+          <Text style={styles.btnDangerText}>Bug found</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.btn, styles.btnSignal]}
+          onPress={() => verify("verified")}
+          disabled={busy}
+          accessibilityRole="button"
+        >
+          <Text style={styles.btnSignalText}>Verify</Text>
         </Pressable>
       </View>
     </ScrollView>
@@ -215,10 +225,12 @@ export function DetailView({
 
 /**
  * Tap-to-play voice-note player backed by expo-av's Audio.Sound. When expo-av
- * isn't installed the row renders disabled — playback needs the same peer the
+ * isn't installed the row renders disabled: playback needs the same peer the
  * recorder uses.
  */
 function AudioNotePlayer({ url }: { url: string }) {
+  const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -269,58 +281,72 @@ function AudioNotePlayer({ url }: { url: string }) {
       style={[styles.audioBtn, disabled && { opacity: 0.5 }]}
       onPress={toggle}
       disabled={disabled}
+      accessibilityRole="button"
     >
       {loading ? (
-        <ActivityIndicator color={theme.primary} />
+        <ActivityIndicator color={theme.c["muted-foreground"]} />
       ) : (
         <Text style={styles.audioBtnText}>
-          {disabled ? "🎙 Voice note (install expo-av to play)" : playing ? "⏸ Pause voice note" : "▶ Play voice note"}
+          {disabled ? "Voice note (install expo-av to play)" : playing ? "Pause voice note" : "Play voice note"}
         </Text>
       )}
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
-  empty: { color: theme.muted, textAlign: "center", marginTop: 32 },
-  back: { color: theme.primary, fontSize: 14, marginBottom: 12 },
-  title: { color: theme.fg, fontSize: 18, fontWeight: "700" },
-  state: { color: theme.muted, fontSize: 12, marginTop: 4, textTransform: "capitalize" },
-  desc: { color: theme.fg, fontSize: 14, marginTop: 12, lineHeight: 20 },
-  audioWrap: { marginTop: 16, gap: 6 },
-  audioHeading: { color: theme.muted, fontSize: 12 },
-  transcript: { color: theme.fg, fontSize: 14, lineHeight: 20, marginTop: 4, marginBottom: 8 },
-  transcriptMuted: { color: theme.muted, fontSize: 13, marginTop: 4, marginBottom: 8 },
-  audioBtn: {
-    borderWidth: 1,
-    borderColor: theme.borderSolid,
-    borderRadius: theme.radiusSm,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: "center",
-  },
-  audioBtnText: { color: theme.fg, fontSize: 14, fontWeight: "600" },
-  videoRow: { color: theme.fg, fontSize: 13 },
-  videoMsg: { color: theme.destructive, fontSize: 12 },
-  input: {
-    backgroundColor: theme.bg,
-    borderWidth: 1,
-    borderColor: theme.borderSolid,
-    borderRadius: theme.radiusSm,
-    color: theme.fg,
-    padding: 10,
-    marginTop: 16,
-    minHeight: 60,
-    textAlignVertical: "top",
-  },
-  actions: { flexDirection: "row", gap: 8, marginTop: 16 },
-  btn: {
+function makeStyles(t: Theme) {
+  const btn = {
     flex: 1,
-    borderRadius: theme.radiusSm,
-    paddingVertical: 10,
-    alignItems: "center",
-  },
-  btnGhost: { borderWidth: 1, borderColor: theme.borderSolid },
-  btnGhostText: { color: theme.fg, fontWeight: "600" },
-  btnText: { color: "#fff", fontWeight: "700" },
-});
+    minHeight: 44,
+    borderRadius: t.radius.md,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  };
+  return {
+    empty: { color: t.c["muted-foreground"], textAlign: "center" as const, marginTop: 32, fontSize: 15 },
+    skeleton: { backgroundColor: t.c["bg-elev-2"], borderRadius: t.radius.sm },
+    backHit: { alignSelf: "flex-start" as const, minHeight: 32, justifyContent: "center" as const, marginBottom: 8 },
+    back: { color: t.c["muted-foreground"], fontSize: 15, fontWeight: "500" as const },
+    title: { color: t.c.foreground, fontSize: 20, fontWeight: "600" as const, letterSpacing: -0.2 },
+    stateRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, marginTop: 6 },
+    ring: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
+    state: { color: t.c["muted-foreground"], fontSize: 13 },
+    desc: { color: t.c.foreground, fontSize: 15, marginTop: 14, lineHeight: 22 },
+    audioWrap: { marginTop: 18, gap: 8 },
+    audioHeading: { color: t.c["muted-foreground"], fontSize: 13, fontWeight: "600" as const },
+    transcript: { color: t.c.foreground, fontSize: 15, lineHeight: 21, marginTop: 4, marginBottom: 8 },
+    transcriptMuted: { color: t.c["muted-foreground"], fontSize: 14, marginTop: 4, marginBottom: 8 },
+    audioBtn: {
+      minHeight: 44,
+      borderWidth: 1,
+      borderColor: t.c.border,
+      borderRadius: t.radius.md,
+      paddingHorizontal: 12,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+    },
+    audioBtnText: { color: t.c.foreground, fontSize: 14, fontWeight: "500" as const },
+    videoRow: { color: t.c.foreground, fontSize: 14 },
+    videoMsg: { color: t.c.destructive, fontSize: 13 },
+    input: {
+      backgroundColor: t.c.input,
+      borderWidth: 1,
+      borderColor: t.c.border,
+      borderRadius: t.radius.md,
+      color: t.c.foreground,
+      fontSize: 16,
+      padding: 12,
+      marginTop: 18,
+      minHeight: 72,
+      textAlignVertical: "top" as const,
+    },
+    actions: { flexDirection: "row" as const, gap: 8, marginTop: 14 },
+    btn,
+    btnGhost: { borderWidth: 1, borderColor: t.c.border },
+    btnGhostText: { color: t.c.foreground, fontWeight: "600" as const, fontSize: 15 },
+    btnDanger: { backgroundColor: t.c["destructive-soft"] },
+    btnDangerText: { color: t.c.destructive, fontWeight: "600" as const, fontSize: 15 },
+    btnSignal: { backgroundColor: t.c.signal },
+    btnSignalText: { color: t.c["signal-foreground"], fontWeight: "600" as const, fontSize: 15 },
+  };
+}

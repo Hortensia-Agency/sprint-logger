@@ -28,10 +28,16 @@
  *        />
  *
  * Static usage (key known at build time) is still supported via `widgetKey`.
+ *
+ *   3. The person's own switch. Pass `visible={false}` when the user turned the
+ *      button off in the host app's settings; it hides without remounting.
+ *
+ * The look (accent, theme, corners, bubble, wording) comes from the project's
+ * Appearance settings in Sprint, through the same config call. No rebuild.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Image, Pressable, Text, View } from "react-native";
 import { Fab } from "./ui/Fab";
 import { BottomSheet } from "./ui/BottomSheet";
 import { ReportView } from "./ui/ReportView";
@@ -45,6 +51,7 @@ import { hostMatches, passesL0, isPatShape, resolveHostKey } from "./config";
 import { loadPat, savePat } from "./storage";
 import type { HostContext } from "./context";
 import type { CaptureProfile, WidgetConfig } from "./contract";
+import { ThemeProvider, useThemedStyles, type Theme } from "./ui/theme";
 
 type Screen = "report" | "queue" | "detail";
 
@@ -105,6 +112,25 @@ export interface SprintQaWidgetProps {
    * from. Viewport + OS/device are captured automatically without this.
    */
   getContext?: () => HostContext | undefined;
+  /**
+   * The host app's per-user switch ("Report a problem" in its settings). False
+   * hides the bubble and sheet; the widget keeps its state. Defaults to true.
+   */
+  visible?: boolean;
+  /**
+   * The current route name. When it matches one of the project's hidden
+   * routes (Sprint, QA settings, Appearance), the bubble hides there.
+   */
+  route?: string;
+}
+
+/** Route names, with * as a wildcard, against the host's current route. */
+function routeHidden(route: string | undefined, patterns: string[] | undefined): boolean {
+  if (!route || !patterns?.length) return false;
+  return patterns.some((p) => {
+    const re = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${re}$`).test(route);
+  });
 }
 
 export function SprintQaWidget(props: SprintQaWidgetProps) {
@@ -274,6 +300,8 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
 
   if (!l0 || hostOff || gated || !remoteConfig || !client) return null;
   const activeClient = client; // narrowed past the guard above
+  const appearance = remoteConfig.appearance;
+  if (props.visible === false || routeHidden(props.route, appearance?.hiddenRoutes)) return null;
 
   const openSheet = () => {
     setScreen("report");
@@ -323,19 +351,54 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
           getContext={props.getContext}
           reportOnly={reportOnly}
           captureProfile={me?.captureProfile ?? "strict"}
+          copy={appearance?.copy}
           onReported={() => setOpen(false)}
         />
       </>
     );
   };
 
+  const title = appearance?.copy.title ?? remoteConfig.projectName;
   return (
-    <>
-      <Fab onPress={openSheet} />
-      <BottomSheet visible={open} onClose={() => setOpen(false)}>
+    <ThemeProvider appearance={appearance}>
+      <Fab
+        onPress={openSheet}
+        size={appearance?.bubble.size}
+        side={appearance?.bubble.side}
+        icon={appearance?.bubble.icon}
+        logoUrl={appearance?.logoUrl}
+        label={appearance?.bubble.label}
+        accessibilityLabel={appearance?.bubble.label ?? "Report a problem"}
+      />
+      <BottomSheet
+        visible={open}
+        onClose={() => setOpen(false)}
+        header={<SheetHeader title={title} logoUrl={appearance?.logoUrl ?? null} onClose={() => setOpen(false)} />}
+      >
         <View>{renderBody()}</View>
       </BottomSheet>
-    </>
+    </ThemeProvider>
+  );
+}
+
+function SheetHeader({ title, logoUrl, onClose }: { title: string; logoUrl: string | null; onClose: () => void }) {
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.header}>
+      {logoUrl ? (
+        <Image source={{ uri: logoUrl }} style={styles.mark} accessibilityIgnoresInvertColors />
+      ) : (
+        <View style={[styles.mark, styles.markFallback]}>
+          <Text style={styles.markText}>{title.trim().charAt(0).toUpperCase()}</Text>
+        </View>
+      )}
+      <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
+        {title}
+      </Text>
+      <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close" style={styles.close}>
+        <Text style={styles.closeText}>Done</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -346,27 +409,43 @@ function Tabs({
   screen: Screen;
   onChange: (s: Screen) => void;
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
-    <View style={tabStyles.row}>
-      <Pressable
-        style={[tabStyles.tab, screen === "report" && tabStyles.active]}
-        onPress={() => onChange("report")}
-      >
-        <Text style={tabStyles.text}>Report</Text>
-      </Pressable>
-      <Pressable
-        style={[tabStyles.tab, screen === "queue" && tabStyles.active]}
-        onPress={() => onChange("queue")}
-      >
-        <Text style={tabStyles.text}>Queue</Text>
-      </Pressable>
+    <View style={styles.tabs} accessibilityRole="tablist">
+      {(["report", "queue"] as const).map((s) => (
+        <Pressable
+          key={s}
+          style={[styles.tab, screen === s && styles.tabOn]}
+          onPress={() => onChange(s)}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: screen === s }}
+        >
+          <Text style={[styles.tabText, screen === s && styles.tabTextOn]}>{s === "report" ? "Report" : "Queue"}</Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
 
-const tabStyles = StyleSheet.create({
-  row: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  tab: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8 },
-  active: { backgroundColor: "#6d5cff" },
-  text: { color: "#ececf2", fontWeight: "600" },
-});
+function makeStyles(t: Theme) {
+  return {
+    header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, paddingBottom: 12 },
+    mark: { width: 28, height: 28, borderRadius: t.radius.sm },
+    markFallback: { backgroundColor: t.c["bg-elev-2"], alignItems: "center" as const, justifyContent: "center" as const },
+    markText: { color: t.c.foreground, fontSize: 13, fontWeight: "600" as const },
+    headerTitle: { flex: 1, color: t.c.foreground, fontSize: 17, fontWeight: "600" as const },
+    close: { minHeight: 36, justifyContent: "center" as const },
+    closeText: { color: t.c["muted-foreground"], fontSize: 16, fontWeight: "500" as const },
+    tabs: {
+      flexDirection: "row" as const,
+      padding: 2,
+      marginBottom: 8,
+      borderRadius: t.radius.md,
+      backgroundColor: t.c["bg-elev-2"],
+    },
+    tab: { flex: 1, minHeight: 36, alignItems: "center" as const, justifyContent: "center" as const, borderRadius: t.radius.sm },
+    tabOn: { backgroundColor: t.c["bg-elev-1"] },
+    tabText: { color: t.c["muted-foreground"], fontSize: 14, fontWeight: "500" as const },
+    tabTextOn: { color: t.c.foreground },
+  };
+}

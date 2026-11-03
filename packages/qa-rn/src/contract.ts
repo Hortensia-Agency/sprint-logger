@@ -25,6 +25,25 @@ export type TaskState =
   | "done"
   | string;
 
+/**
+ * The project's look, resolved by Sprint (QA settings, Appearance). Absent on
+ * older servers; every field falls back to Sprint's own look.
+ */
+export interface WidgetAppearance {
+  theme: "auto" | "light" | "dark";
+  radius: { sm: number; md: number; lg: number };
+  /** HSL triples for the accent family; null keeps Sprint's accent. */
+  tokens: {
+    light: Record<"signal" | "signal-strong" | "signal-soft" | "signal-foreground" | "ring", string>;
+    dark: Record<"signal" | "signal-strong" | "signal-soft" | "signal-foreground" | "ring", string>;
+  } | null;
+  logoUrl: string | null;
+  bubble: { icon: "bug" | "chat" | "help" | "logo"; size: number; side: "right" | "left"; label: string | null };
+  /** Paths on the web; on native, matched against the `route` prop. */
+  hiddenRoutes: string[];
+  copy: { title: string | null; intro: string | null; submit: string | null; thanks: string | null };
+}
+
 /** GET /api/widget/config */
 export interface WidgetConfig {
   enabled: boolean;
@@ -32,6 +51,7 @@ export interface WidgetConfig {
   projectName: string;
   qaUrls: string[];
   signoffPolicy: SignoffPolicy;
+  appearance?: WidgetAppearance;
 }
 
 /** How much a report may capture; widget reporters get a strict profile. */

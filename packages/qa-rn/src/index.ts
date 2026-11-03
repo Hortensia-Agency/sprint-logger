@@ -19,6 +19,7 @@ export type { HostContext } from "./context";
 export type { SprintQaConfig } from "./config";
 export type {
   WidgetConfig,
+  WidgetAppearance,
   WidgetMe,
   QueueTask,
   QueueResponse,
