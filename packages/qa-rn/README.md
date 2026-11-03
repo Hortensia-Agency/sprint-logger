@@ -123,6 +123,30 @@ The token is **tenant-scoped and expires** (default 90 days). Revoking it in
 Sprint denies it on the next call — that's the only fast kill switch (see
 below).
 
+## The look, and each person's switch (v0.5.0+)
+
+The widget draws with Sprint's own tokens, in light and dark, following the
+device unless the project picks one. Everything else about its look comes from
+the project's **Appearance** settings in Sprint (QA settings): accent color,
+corners, the bubble's icon, size, side and label, the pages it hides on, and
+the panel's wording. It arrives with the config call, so it changes without a
+rebuild.
+
+Two props belong to your app:
+
+```tsx
+<SprintQaWidget
+  host="my-app"
+  widgetKey={process.env.EXPO_PUBLIC_SPRINT_QA_KEY}
+  visible={user.reportBugWidget}   // the person's "Report a problem" switch
+  route={currentRouteName}         // lets the project's hidden pages apply
+/>
+```
+
+`visible={false}` hides the bubble and the sheet without remounting the
+widget. Store the preference in your own backend (or on the device for people
+who aren't signed in); Sprint never sees it.
+
 ## What auto-updates vs what needs a rebuild
 
 The **data/auth contract** (endpoints, config, tenant resolution) updates live —
