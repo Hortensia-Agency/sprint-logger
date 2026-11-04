@@ -1,6 +1,6 @@
 # @sprint-logger/qa-rn
 
-Sprint's QA widget for React Native / Expo host apps — in-context bug reporting
+Sprint's QA widget for React Native / Expo host apps: in-context bug reporting
 and a QA work queue, embedded as a movable FAB + bottom sheet.
 
 This is the native counterpart to Sprint's web QA widget (`qa-widget.js`). It
@@ -15,9 +15,9 @@ pnpm add @sprint-logger/qa-rn
 # peer deps (most Expo apps already have the first three):
 pnpm add react-native-gesture-handler react-native-reanimated \
   @react-native-async-storage/async-storage
-# optional — only if you want screenshot capture:
+# optional, only if you want screenshot capture:
 pnpm add react-native-view-shot
-# optional — only if you want demo-video attach (OS-recorder clips):
+# optional, only if you want demo-video attach (OS-recorder clips):
 pnpm add expo-image-picker expo-file-system
 ```
 
@@ -26,15 +26,15 @@ Mount once near the app root, inside a `GestureHandlerRootView`.
 ## Two host controls + the guard chain
 
 Visibility is decided every launch (and on foreground / interval). The widget
-renders **only** when the whole chain passes — otherwise it silently returns
+renders **only** when the whole chain passes; otherwise it silently returns
 nothing (no FAB, no network).
 
 **Host controls (yours):**
 
-- **Build-time bundle gate — `EXPO_PUBLIC_ENABLE_SPRINT_QA`.** Your own baked-in
+- **Build-time bundle gate: `EXPO_PUBLIC_ENABLE_SPRINT_QA`.** Your own baked-in
   env, gating the mount. Decides whether the widget is even *shipped*. Changing
   it requires a rebuild. This is the dev's "include it or not" switch.
-- **Runtime config from your OWN backend — `fetchConfig`.** The **no-rebuild
+- **Runtime config from your OWN backend: `fetchConfig`.** The **no-rebuild
   kill switch.** Your app fetches `{ widgetKey, enabled }` from your backend at
   launch. Flip `enabled` to false in your backend, drop the key, or repoint the
   app at a backend env that lacks those vars → **the widget disappears on the
@@ -43,10 +43,10 @@ nothing (no FAB, no network).
 
 **Sprint-side guards (driven live by `/api/widget/config`):**
 
-- **L1 — `enabled`.** The project's `widget_enabled` toggle (a Sprint manager's
+- **L1: `enabled`.** The project's `widget_enabled` toggle (a Sprint manager's
   per-project kill switch).
-- **L2 — host match.** `host` must be in the project's `qa_urls`.
-- **L3 — identity.** A valid `mobile_widget` PAT (paste prompt if absent).
+- **L2: host match.** `host` must be in the project's `qa_urls`.
+- **L3: identity.** A valid `mobile_widget` PAT (paste prompt if absent).
 
 ### Recommended: runtime config from your backend (no-rebuild kill switch)
 
@@ -64,7 +64,7 @@ export default function App() {
       {process.env.EXPO_PUBLIC_ENABLE_SPRINT_QA === "true" && (
         <SprintQaWidget
           host="my-app-staging"                 // must be in the project's qa_urls
-          // runtime config from YOUR backend — the no-rebuild switch:
+          // runtime config from YOUR backend, the no-rebuild switch:
           fetchConfig={async () => {
             const r = await fetch(MY_BACKEND + "/mobile-config").then((x) => x.json());
             return { widgetKey: r.sprintQaKey, enabled: r.sprintQaEnabled };
@@ -80,7 +80,7 @@ export default function App() {
 ```
 
 When your backend stops returning `sprintQaEnabled:true` (or stops returning the
-key), the widget hides on the next launch/foreground — or within
+key), the widget hides on the next launch/foreground, or within
 `refreshIntervalMs` if you set it. No app rebuild.
 
 ### Static key (known at build time)
@@ -96,9 +96,9 @@ only have Sprint's `widget_enabled` toggle as the no-rebuild switch:
 
 Every report carries context so the dev has a repro starting point:
 
-- **Captured by the SDK automatically** — viewport (`Dimensions`) and a
+- **Captured by the SDK automatically:** viewport (`Dimensions`) and a
   device/OS string (`ReactNative/<os> <version>`). No wiring needed.
-- **Supplied by you via `getContext`** — the SDK can't see your current screen
+- **Supplied by you via `getContext`:** the SDK can't see your current screen
   (only your navigation library knows it), so pass it in. The thunk is read at
   report time, so the route is always current:
 
@@ -120,7 +120,7 @@ Every report carries context so the dev has a repro starting point:
    persists per-device (AsyncStorage); you won't be asked again.
 
 The token is **tenant-scoped and expires** (default 90 days). Revoking it in
-Sprint denies it on the next call — that's the only fast kill switch (see
+Sprint denies it on the next call. That's the only fast kill switch (see
 below).
 
 ## The look, and each person's switch (v0.5.0+)
@@ -147,9 +147,49 @@ Two props belong to your app:
 widget. Store the preference in your own backend (or on the device for people
 who aren't signed in); Sprint never sees it.
 
+### Setting the look and the text in code (v0.6.0+)
+
+Anything you set in code wins over the project's Appearance settings, field by
+field, so the widget can follow your app's own theme, brand and language:
+
+```tsx
+<SprintQaWidget
+  host="my-app"
+  widgetKey={process.env.EXPO_PUBLIC_SPRINT_QA_KEY}
+  appearance={{
+    accent: { light: "#0F766E" },
+    radius: "round",
+    bubble: { icon: "chat", side: "left" },
+    colors: {
+      light: { background: "#F4F7F6", "bg-elev-1": "#FFFFFF", foreground: "#111827" },
+      dark: { "bg-elev-1": "#111315" },
+    },
+  }}
+  strings={i18n.locale === "fr" ? { tabReport: "Signaler", submit: "Envoyer" } : undefined}
+  dir={i18n.dir}   // "rtl" mirrors the sheet; defaults to I18nManager
+/>
+```
+
+- **`appearance`** takes the same fields as the Appearance settings, plus
+  `colors`: any token from `TokenName` as hex, per theme (`background`,
+  `bg-elev-1` for the sheet, `foreground`, `muted-foreground`, `primary`,
+  `border`, the `signal` accent family and the status colors). Sprint checks
+  contrast on the result; if text would be unreadable it ignores your override,
+  keeps the project's look and logs why with `console.warn`.
+- **`strings`** replaces any text by key. `STRINGS` (exported) lists every key
+  with its English default; keys you leave out stay English. `{slots}` such as
+  `{time}` are filled in. `title` and `intro` set the sheet's title and a line
+  above the form.
+- **`dir`** mirrors the sheet for right to left languages. It follows the app's
+  own direction (`I18nManager.isRTL`) when left out. The bubble keeps the side
+  you or the project chose.
+
+Changing any of these at runtime takes effect straight away; `appearance`
+refetches the config.
+
 ## What auto-updates vs what needs a rebuild
 
-The **data/auth contract** (endpoints, config, tenant resolution) updates live —
+The **data/auth contract** (endpoints, config, tenant resolution) updates live:
 Sprint can change server behavior and your installed app picks it up. The
 **UI is compiled into your binary at EAS build time**: there is no
 `<script src>` to hot-load like the web widget. So a UI change in this package
@@ -175,7 +215,7 @@ both optional peers `expo-image-picker` (the library picker) and
 `expo-file-system` (the upload); without them the control never renders.
 
 - Upload is a presigned direct PUT to Sprint's storage, streamed **from disk**
-  via `FileSystem.uploadAsync` — the clip never enters the JS heap, so a
+  via `FileSystem.uploadAsync`. The clip never enters the JS heap, so a
   150 MB video can't OOM the host app. Never replace this path with
   `fetch(uri)` + blob.
 - Caps: 150 MB per clip (server-enforced twice: at presign and by a

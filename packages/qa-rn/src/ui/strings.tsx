@@ -1,0 +1,155 @@
+/**
+ * Every string the widget shows, by key, with its English default. A host
+ * translates any of them with the `strings` prop; keys it leaves out stay
+ * English. {slots} are filled in. Keys match the web widget's where the text
+ * means the same thing, so one translation file can serve both.
+ */
+
+import React, { createContext, useContext, useMemo } from "react";
+import type { WidgetAppearance } from "../contract";
+
+export const STRINGS = {
+  bubbleLabel: "Report a problem",
+  close: "Close",
+  done: "Done",
+  tabReport: "Report",
+  tabQueue: "Queue",
+
+  signInTitle: "Sign in to report a problem",
+  signInBody: "Sign in so the team can follow up on what you send. You only do this once on this device.",
+  signIn: "Sign in",
+  pasteTokenLink: "Have a token from the team? Paste it",
+  pasteTokenBody: "Paste the token the team gave you. You only do this once on this device.",
+  token: "Token",
+  connect: "Connect",
+  signInNotMember: "This account can't report on this project. Ask the team that sent you here for access.",
+  reportingOff: "Reporting is turned off for this app right now.",
+  signInIncomplete: "Sign-in didn't complete. Please try again.",
+  networkError: "Network error. Check your connection and try again.",
+  signInFailed: "Sign-in failed. Please try again.",
+
+  titleField: "Title",
+  titlePlaceholder: "What went wrong?",
+  detailsLabel: "Details",
+  detailsPlaceholder: "What you did, what you expected, what happened",
+  severityLabel: "Severity",
+  sevLow: "Low",
+  sevMedium: "Medium",
+  sevHigh: "High",
+  sevBlocker: "Blocker",
+  severityA11y: "{severity} severity",
+  attachScreenshot: "Attach a screenshot of this screen",
+  recordVoiceNote: "Record a voice note",
+  recordAgain: "Record again",
+  stop: "Stop {time}",
+  attachVideo: "Attach a video",
+  pickAnotherVideo: "Pick another video",
+  voiceNote: "Voice note",
+  remove: "Remove",
+  removeItem: "Remove {item}",
+  submit: "Send report",
+  voiceSaveFailed: "Couldn't save the voice note.",
+  micOff: "Microphone access is off. Allow it in Settings to record a voice note.",
+  videoPickFailed: "Couldn't pick that video.",
+  summaryRequired: "Add a title so the team knows what this is about.",
+  videoUploadFailedShort: "Video upload failed.",
+  videoRetryHint: "Your report is sent; tap Send report to retry the video.",
+  reportFailed: "Couldn't send the report. Check your connection and try again.",
+  sentHeld: "Sent. A team member will review it before it reaches the board.",
+  thanks: "Sent. The team has it.",
+
+  queueLoadFailed: "Couldn't load the queue. Pull the sheet down and open it again.",
+  loadingQueue: "Loading the queue",
+  queueBlocked: "You don't have access to this project's queue.",
+  queueEmpty: "Nothing is waiting for QA.",
+  stateWaitingToDeploy: "Waiting to deploy",
+  stateReadyToTest: "Ready to test",
+  stateInReview: "In review",
+  stateSentBack: "Sent back",
+  stateDone: "Done",
+  stateBlocked: "Blocked",
+
+  taskLoadFailed: "Couldn't load this task.",
+  loadingTask: "Loading the task",
+  backToQueue: "Queue",
+  verifiedCount: "{state}, {count} verified",
+  voiceNotes: "Voice notes",
+  demoVideos: "Demo videos",
+  uploading: "Uploading…",
+  uploadingVideo: "Uploading video…",
+  attachDemoVideo: "Attach a demo video",
+  notesPlaceholder: "Notes for the team (optional)",
+  take: "Take",
+  bugFound: "Bug found",
+  verify: "Verify",
+  voiceNoteNoPlayer: "Voice note (install expo-av to play)",
+  pauseVoiceNote: "Pause voice note",
+  playVoiceNote: "Play voice note",
+  transcriptOff: "Not transcribed: transcription is off for this workspace.",
+  transcriptOverCap: "Waiting: this month's transcription limit is reached.",
+  transcriptProviderAuth: "Waiting: the transcription provider refused our key.",
+  transcriptEmpty: "No speech found in this note.",
+  transcribing: "Transcribing",
+  transcriptTooLong: "Not transcribed: voice notes are limited to 2 minutes.",
+  transcriptFailed: "Transcription failed.",
+} as const;
+
+export type StringKey = keyof typeof STRINGS;
+
+/**
+ * The host's own text, by key. "title" (the sheet's title) and "intro" (a line
+ * above the form) have no English default: without them the sheet shows the
+ * project's wording from Sprint, else its name and no intro.
+ */
+export type WidgetStrings = Partial<Record<StringKey | "title" | "intro", string>>;
+
+type Copy = WidgetAppearance["copy"] | undefined;
+// The project's wording from Sprint (Appearance) sits between the host's and the default.
+const COPY_FIELD: Partial<Record<keyof WidgetStrings, keyof NonNullable<Copy>>> = {
+  title: "title",
+  intro: "intro",
+  submit: "submit",
+  thanks: "thanks",
+};
+
+export interface Translate {
+  (key: StringKey, vars?: Record<string, string | number>): string;
+  /** The host's or the project's text for a key, or null when neither set one. */
+  own: (key: keyof WidgetStrings) => string | null;
+}
+
+function make(strings: WidgetStrings | undefined, copy: Copy): Translate {
+  const own = (key: keyof WidgetStrings): string | null => {
+    const host = strings?.[key];
+    if (typeof host === "string" && host) return host;
+    const field = COPY_FIELD[key];
+    return (field && copy?.[field]) || null;
+  };
+  const t = ((key: StringKey, vars?: Record<string, string | number>) => {
+    const s = own(key) ?? STRINGS[key];
+    return vars ? s.replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? String(vars[name]) : m)) : s;
+  }) as Translate;
+  t.own = own;
+  return t;
+}
+
+const StringsContext = createContext<Translate>(make(undefined, undefined));
+
+export function StringsProvider({
+  strings,
+  copy,
+  children,
+}: {
+  strings: WidgetStrings | undefined;
+  copy: Copy;
+  children: React.ReactNode;
+}) {
+  // Keyed on content so an inline object literal doesn't rebuild every render.
+  const key = JSON.stringify(strings ?? null);
+  const value = useMemo(() => make(strings, copy), [key, copy]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <StringsContext.Provider value={value}>{children}</StringsContext.Provider>;
+}
+
+export function useStrings(): Translate {
+  return useContext(StringsContext);
+}

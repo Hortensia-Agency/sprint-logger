@@ -16,10 +16,14 @@ export {
 } from "./video";
 export type { VideoPart } from "./video";
 export type { HostContext } from "./context";
+export { STRINGS } from "./ui/strings";
+export type { StringKey, WidgetStrings } from "./ui/strings";
+export type { TokenName } from "./ui/tokens";
 export type { SprintQaConfig } from "./config";
 export type {
   WidgetConfig,
   WidgetAppearance,
+  AppearanceOverride,
   WidgetMe,
   QueueTask,
   QueueResponse,

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 import { useTheme, useThemedStyles, type Theme } from "./theme";
+import { useStrings, type StringKey } from "./strings";
 import { isPatShape, resolveOrigin } from "../config";
 import { getDeviceId } from "../storage";
 import { isOAuthAvailable, signInWithSprint, type OAuthDeps } from "../oauth";
@@ -25,6 +26,7 @@ export function PatGate({
   oauthDeps?: OAuthDeps;
 }) {
   const theme = useTheme();
+  const t = useStrings();
   const styles = useThemedStyles(makeStyles);
   const [value, setValue] = useState("");
   const [showPaste, setShowPaste] = useState(false);
@@ -50,7 +52,7 @@ export function PatGate({
       if (res.ok) {
         onSubmit(res.token);
       } else if (res.error !== "cancelled" && res.error !== "dismissed") {
-        setError(errorMessage(res.error));
+        setError(t(errorKey(res.error)));
       }
     } finally {
       setBusy(false);
@@ -59,13 +61,11 @@ export function PatGate({
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>Sign in to report a problem</Text>
+      <Text style={styles.title}>{t("signInTitle")}</Text>
 
       {canOAuth ? (
         <>
-          <Text style={styles.body}>
-            Sign in so the team can follow up on what you send. You only do this once on this device.
-          </Text>
+          <Text style={styles.body}>{t("signInBody")}</Text>
           <Pressable
             style={({ pressed }) => [styles.btn, (busy || pressed) && styles.pressed]}
             disabled={busy}
@@ -76,7 +76,7 @@ export function PatGate({
             {busy ? (
               <ActivityIndicator color={theme.c["signal-foreground"]} />
             ) : (
-              <Text style={styles.btnText}>Sign in</Text>
+              <Text style={styles.btnText}>{t("signIn")}</Text>
             )}
           </Pressable>
           {error ? (
@@ -86,12 +86,12 @@ export function PatGate({
           ) : null}
           {!showPaste && (
             <Pressable onPress={() => setShowPaste(true)} hitSlop={10} accessibilityRole="button" style={styles.linkHit}>
-              <Text style={styles.link}>Have a token from the team? Paste it</Text>
+              <Text style={styles.link}>{t("pasteTokenLink")}</Text>
             </Pressable>
           )}
         </>
       ) : (
-        <Text style={styles.body}>Paste the token the team gave you. You only do this once on this device.</Text>
+        <Text style={styles.body}>{t("pasteTokenBody")}</Text>
       )}
 
       {(showPaste || !canOAuth) && (
@@ -104,7 +104,7 @@ export function PatGate({
             placeholderTextColor={theme.c["subtle-foreground"]}
             autoCapitalize="none"
             autoCorrect={false}
-            accessibilityLabel="Token"
+            accessibilityLabel={t("token")}
           />
           <Pressable
             style={[styles.btnQuiet, !valid && { opacity: 0.5 }]}
@@ -112,7 +112,7 @@ export function PatGate({
             onPress={() => onSubmit(value.trim())}
             accessibilityRole="button"
           >
-            <Text style={styles.btnQuietText}>Connect</Text>
+            <Text style={styles.btnQuietText}>{t("connect")}</Text>
           </Pressable>
         </>
       )}
@@ -120,18 +120,18 @@ export function PatGate({
   );
 }
 
-function errorMessage(code: string): string {
+function errorKey(code: string): StringKey {
   switch (code) {
     case "not_a_qa_member":
-      return "This account can't report on this project. Ask the team that sent you here for access.";
+      return "signInNotMember";
     case "widget_disabled":
-      return "Reporting is turned off for this app right now.";
+      return "reportingOff";
     case "not_authenticated":
-      return "Sign-in didn't complete. Please try again.";
+      return "signInIncomplete";
     case "network":
-      return "Network error. Check your connection and try again.";
+      return "networkError";
     default:
-      return "Sign-in failed. Please try again.";
+      return "signInFailed";
   }
 }
 

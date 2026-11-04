@@ -23,7 +23,8 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { useThemedStyles, type Theme } from "./theme";
+import { useTheme, useThemedStyles, type Theme } from "./theme";
+import { useStrings } from "./strings";
 import { appleSpring, project, rubberband, SHEET_RESPONSE } from "./motion";
 
 export function BottomSheet({
@@ -42,6 +43,8 @@ export function BottomSheet({
 }) {
   const { height } = useWindowDimensions();
   const styles = useThemedStyles(makeStyles);
+  const { rtl } = useTheme();
+  const t = useStrings();
   const reduceMotion = useReducedMotion();
   const sheetH = Math.round(height * heightRatio);
   const ty = useSharedValue(sheetH);
@@ -97,10 +100,13 @@ export function BottomSheet({
           style={StyleSheet.absoluteFill}
           onPress={onClose}
           accessibilityRole="button"
-          accessibilityLabel="Close"
+          accessibilityLabel={t("close")}
         />
       </Animated.View>
-      <Animated.View style={[styles.sheet, { height: sheetH }, sheetStyle]} accessibilityViewIsModal>
+      <Animated.View
+        style={[styles.sheet, { height: sheetH, direction: rtl ? "rtl" : "ltr" }, sheetStyle]}
+        accessibilityViewIsModal
+      >
         <GestureDetector gesture={pan}>
           <View>
             <View style={styles.grabArea}>

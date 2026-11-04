@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { severityColor, stateColor, useTheme, useThemedStyles, type Theme } from "./theme";
+import { useStrings, type StringKey, type Translate } from "./strings";
 import type { SprintQaClient } from "../client";
 import type { QueueTask } from "../contract";
 
@@ -12,6 +13,7 @@ export function QueueView({
   onOpenTask: (taskId: number) => void;
 }) {
   const theme = useTheme();
+  const t = useStrings();
   const styles = useThemedStyles(makeStyles);
   const [tasks, setTasks] = useState<QueueTask[] | null>(null);
   const [blocked, setBlocked] = useState(false);
@@ -33,11 +35,11 @@ export function QueueView({
   }, [client]);
 
   if (error) {
-    return <Text style={styles.empty}>Couldn&apos;t load the queue. Pull the sheet down and open it again.</Text>;
+    return <Text style={styles.empty}>{t("queueLoadFailed")}</Text>;
   }
   if (tasks === null) {
     return (
-      <View accessibilityLabel="Loading the queue">
+      <View accessibilityLabel={t("loadingQueue")}>
         {[0, 1, 2].map((i) => (
           <View key={i} style={styles.row}>
             <View style={[styles.ring, styles.skeleton]} />
@@ -53,7 +55,7 @@ export function QueueView({
   if (blocked || tasks.length === 0) {
     return (
       <Text style={styles.empty}>
-        {blocked ? "You don't have access to this project's queue." : "Nothing is waiting for QA."}
+        {blocked ? t("queueBlocked") : t("queueEmpty")}
       </Text>
     );
   }
@@ -74,12 +76,12 @@ export function QueueView({
             <Text style={styles.title} numberOfLines={2}>
               {item.title}
             </Text>
-            <Text style={styles.state}>{stateLabel(item.state)}</Text>
+            <Text style={styles.state}>{stateLabel(item.state, t)}</Text>
           </View>
           {item.severity && (
             <View
               style={[styles.sevDot, { backgroundColor: severityColor(theme, item.severity) }]}
-              accessibilityLabel={`${item.severity} severity`}
+              accessibilityLabel={t("severityA11y", { severity: t(SEV_KEY[item.severity]) })}
             />
           )}
         </Pressable>
@@ -88,7 +90,29 @@ export function QueueView({
   );
 }
 
-export function stateLabel(state: string): string {
+export const SEV_KEY: Record<string, StringKey> = {
+  low: "sevLow",
+  medium: "sevMedium",
+  high: "sevHigh",
+  blocker: "sevBlocker",
+};
+
+// QA bookkeeping states read as the stage a person sees, as on the web.
+const STATE_KEY: Record<string, StringKey> = {
+  ready_for_qa: "stateWaitingToDeploy",
+  deployed: "stateReadyToTest",
+  in_qa: "stateInReview",
+  verified_once: "stateInReview",
+  verified_twice: "stateInReview",
+  in_progress: "stateSentBack",
+  needs_changes: "stateSentBack",
+  done: "stateDone",
+  blocked: "stateBlocked",
+};
+
+export function stateLabel(state: string, t: Translate): string {
+  const key = STATE_KEY[state];
+  if (key) return t(key);
   const s = state.replace(/_/g, " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }

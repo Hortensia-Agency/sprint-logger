@@ -34,6 +34,7 @@
  *
  * The look (accent, theme, corners, bubble, wording) comes from the project's
  * Appearance settings in Sprint, through the same config call. No rebuild.
+ * Pass `appearance` to set any of it in code instead; what you set wins.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -50,7 +51,8 @@ import { SprintQaClient } from "./client";
 import { hostMatches, passesL0, isPatShape, resolveHostKey } from "./config";
 import { loadPat, savePat } from "./storage";
 import type { HostContext } from "./context";
-import type { CaptureProfile, WidgetConfig } from "./contract";
+import type { AppearanceOverride, CaptureProfile, WidgetConfig } from "./contract";
+import { STRINGS, StringsProvider, useStrings, type WidgetStrings } from "./ui/strings";
 import { ThemeProvider, useThemedStyles, type Theme } from "./ui/theme";
 
 type Screen = "report" | "queue" | "detail";
@@ -122,6 +124,19 @@ export interface SprintQaWidgetProps {
    * routes (Sprint, QA settings, Appearance), the bubble hides there.
    */
   route?: string;
+  /**
+   * The look set in code, laid over the project's Appearance settings in
+   * Sprint field by field. Use it to follow the app's own theme or brand.
+   * Changing it refetches the config.
+   */
+  appearance?: AppearanceOverride;
+  /**
+   * The widget's text in the app's language, by key (see STRINGS). Keys left
+   * out stay English. Pass a new object when the language changes.
+   */
+  strings?: WidgetStrings;
+  /** "rtl" mirrors the sheet. Defaults to the app's own direction (I18nManager). */
+  dir?: "ltr" | "rtl";
 }
 
 /** Route names, with * as a wildcard, against the host's current route. */
@@ -186,6 +201,8 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
   // Re-runnable so the host backend flipping enabled/key (or repointing the
   // app at a backend without those vars) hides/shows the widget WITHOUT a
   // rebuild. Fail-safe: any error or missing value → off.
+  // Keyed on the serialized value so an inline object literal doesn't refetch every render.
+  const overrideJson = props.appearance ? JSON.stringify(props.appearance) : null;
   const evaluate = useCallback(async () => {
     if (!l0) return;
     // 1. Resolve host runtime config (from the host's OWN backend).
@@ -220,7 +237,10 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
             pat: null,
           });
     try {
-      const rc = await c.config();
+      const rc = await c.config(overrideJson ?? undefined);
+      if (rc.appearanceOverrideError) {
+        console.warn(`[sprint-qa] appearance prop ignored: ${rc.appearanceOverrideError}`);
+      }
       if (!rc.enabled || !hostMatches(props.host, rc.qaUrls)) {
         setGated(true);
         setRemoteConfig(null);
@@ -232,7 +252,7 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
       setGated(true); // 404 / no-oracle → silent no-render
       setRemoteConfig(null);
     }
-  }, [l0, props.widgetKey, props.fetchConfig, props.host, props.origin]);
+  }, [l0, props.widgetKey, props.fetchConfig, props.host, props.origin, overrideJson]);
 
   // Evaluate on mount + whenever evaluate's deps change.
   useEffect(() => {
@@ -351,38 +371,55 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
           getContext={props.getContext}
           reportOnly={reportOnly}
           captureProfile={me?.captureProfile ?? "strict"}
-          copy={appearance?.copy}
           onReported={() => setOpen(false)}
         />
       </>
     );
   };
 
-  const title = appearance?.copy.title ?? remoteConfig.projectName;
+  const hostBubble = props.strings?.bubbleLabel;
   return (
-    <ThemeProvider appearance={appearance}>
-      <Fab
-        onPress={openSheet}
-        size={appearance?.bubble.size}
-        side={appearance?.bubble.side}
-        icon={appearance?.bubble.icon}
-        logoUrl={appearance?.logoUrl}
-        label={appearance?.bubble.label}
-        accessibilityLabel={appearance?.bubble.label ?? "Report a problem"}
-      />
-      <BottomSheet
-        visible={open}
-        onClose={() => setOpen(false)}
-        header={<SheetHeader title={title} logoUrl={appearance?.logoUrl ?? null} onClose={() => setOpen(false)} />}
-      >
-        <View>{renderBody()}</View>
-      </BottomSheet>
+    <ThemeProvider appearance={appearance} dir={props.dir}>
+      <StringsProvider strings={props.strings} copy={appearance?.copy}>
+        <Fab
+          onPress={openSheet}
+          size={appearance?.bubble.size}
+          side={appearance?.bubble.side}
+          icon={appearance?.bubble.icon}
+          logoUrl={appearance?.logoUrl}
+          label={appearance?.bubble.label ? hostBubble || appearance.bubble.label : undefined}
+          accessibilityLabel={hostBubble || appearance?.bubble.label || STRINGS.bubbleLabel}
+        />
+        <BottomSheet
+          visible={open}
+          onClose={() => setOpen(false)}
+          header={
+            <SheetHeader
+              projectName={remoteConfig.projectName}
+              logoUrl={appearance?.logoUrl ?? null}
+              onClose={() => setOpen(false)}
+            />
+          }
+        >
+          <View>{renderBody()}</View>
+        </BottomSheet>
+      </StringsProvider>
     </ThemeProvider>
   );
 }
 
-function SheetHeader({ title, logoUrl, onClose }: { title: string; logoUrl: string | null; onClose: () => void }) {
+function SheetHeader({
+  projectName,
+  logoUrl,
+  onClose,
+}: {
+  projectName: string;
+  logoUrl: string | null;
+  onClose: () => void;
+}) {
   const styles = useThemedStyles(makeStyles);
+  const t = useStrings();
+  const title = t.own("title") ?? projectName;
   return (
     <View style={styles.header}>
       {logoUrl ? (
@@ -395,8 +432,8 @@ function SheetHeader({ title, logoUrl, onClose }: { title: string; logoUrl: stri
       <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
         {title}
       </Text>
-      <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close" style={styles.close}>
-        <Text style={styles.closeText}>Done</Text>
+      <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel={t("close")} style={styles.close}>
+        <Text style={styles.closeText}>{t("done")}</Text>
       </Pressable>
     </View>
   );
@@ -410,6 +447,7 @@ function Tabs({
   onChange: (s: Screen) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const t = useStrings();
   return (
     <View style={styles.tabs} accessibilityRole="tablist">
       {(["report", "queue"] as const).map((s) => (
@@ -420,7 +458,7 @@ function Tabs({
           accessibilityRole="tab"
           accessibilityState={{ selected: screen === s }}
         >
-          <Text style={[styles.tabText, screen === s && styles.tabTextOn]}>{s === "report" ? "Report" : "Queue"}</Text>
+          <Text style={[styles.tabText, screen === s && styles.tabTextOn]}>{s === "report" ? t("tabReport") : t("tabQueue")}</Text>
         </Pressable>
       ))}
     </View>

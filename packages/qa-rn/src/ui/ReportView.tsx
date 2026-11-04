@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 import { severityColor, useTheme, useThemedStyles, type Theme } from "./theme";
+import { useStrings } from "./strings";
+import { SEV_KEY } from "./QueueView";
 import { buildContext, type HostContext } from "../context";
 import type { SprintQaClient } from "../client";
-import type { CaptureProfile, Severity, WidgetAppearance } from "../contract";
+import type { CaptureProfile, Severity } from "../contract";
 import type { AudioRecorder, AudioPart } from "../audio";
 import {
   pickDemoVideo,
@@ -13,7 +15,6 @@ import {
 } from "../video";
 
 const SEVERITIES: Severity[] = ["low", "medium", "high", "blocker"];
-const SEV_LABEL: Record<Severity, string> = { low: "Low", medium: "Medium", high: "High", blocker: "Blocker" };
 const AUDIO_MAX_SECONDS = 120; // 2-minute soft cap
 
 function fmtDuration(sec: number): string {
@@ -31,7 +32,6 @@ export function ReportView({
   getContext,
   reportOnly = false,
   captureProfile = "standard",
-  copy,
 }: {
   client: SprintQaClient;
   onReported: (taskId: number) => void;
@@ -41,10 +41,9 @@ export function ReportView({
   /** A widget reporter: no severity picker, and a held ticket gets a confirmation. */
   reportOnly?: boolean;
   captureProfile?: CaptureProfile;
-  /** The project's own wording, from Sprint's Appearance settings. */
-  copy?: WidgetAppearance["copy"];
 }) {
   const theme = useTheme();
+  const t = useStrings();
   const styles = useThemedStyles(makeStyles);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -82,7 +81,7 @@ export function ReportView({
       if (part) setAudio(part);
       return part;
     } catch {
-      setError("Couldn't save the voice note.");
+      setError(t("voiceSaveFailed"));
       return null;
     }
   };
@@ -93,7 +92,7 @@ export function ReportView({
     try {
       await audioRecorder.start();
     } catch {
-      setError("Microphone access is off. Allow it in Settings to record a voice note.");
+      setError(t("micOff"));
       return;
     }
     setAudio(null);
@@ -111,13 +110,13 @@ export function ReportView({
       const part = await pickDemoVideo();
       if (part) setVideo(part);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't pick that video.");
+      setError(e instanceof Error ? e.message : t("videoPickFailed"));
     }
   }
 
   async function submit() {
     if (!title.trim()) {
-      setError("Add a title so the team knows what this is about.");
+      setError(t("summaryRequired"));
       return;
     }
     setSubmitting(true);
@@ -161,8 +160,7 @@ export function ReportView({
           await uploadDemoVideo(client, bugTaskId, video);
         } catch (e) {
           setError(
-            (e instanceof Error ? e.message : "Video upload failed.") +
-              " Your report is sent; tap Send report to retry the video."
+            `${e instanceof Error ? e.message : t("videoUploadFailedShort")} ${t("videoRetryHint")}`
           );
           return;
         }
@@ -172,7 +170,7 @@ export function ReportView({
       if (held.current || reportOnly) setSent({ id: bugTaskId, held: held.current });
       else onReported(bugTaskId);
     } catch {
-      setError("Couldn't send the report. Check your connection and try again.");
+      setError(t("reportFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -182,16 +180,14 @@ export function ReportView({
     return (
       <View style={styles.wrap} accessibilityLiveRegion="polite">
         <Text style={styles.sentText}>
-          {sent.held
-            ? "Sent. A team member will review it before it reaches the board."
-            : copy?.thanks ?? "Sent. The team has it."}
+          {sent.held ? t("sentHeld") : t("thanks")}
         </Text>
         <Pressable
           style={({ pressed }) => [styles.submit, pressed && styles.pressed]}
           onPress={() => onReported(sent.id)}
           accessibilityRole="button"
         >
-          <Text style={styles.submitText}>Done</Text>
+          <Text style={styles.submitText}>{t("done")}</Text>
         </Pressable>
       </View>
     );
@@ -200,28 +196,28 @@ export function ReportView({
   const placeholder = theme.c["subtle-foreground"];
   return (
     <View style={styles.wrap}>
-      {copy?.intro ? <Text style={styles.intro}>{copy.intro}</Text> : null}
-      <Text style={styles.label} nativeID="sq-title">Title</Text>
+      {t.own("intro") ? <Text style={styles.intro}>{t.own("intro")}</Text> : null}
+      <Text style={styles.label} nativeID="sq-title">{t("titleField")}</Text>
       <TextInput
         style={[styles.input, focus === "title" && styles.inputFocus]}
         value={title}
         onChangeText={setTitle}
         onFocus={() => setFocus("title")}
         onBlur={() => setFocus(null)}
-        placeholder="What went wrong?"
+        placeholder={t("titlePlaceholder")}
         placeholderTextColor={placeholder}
         maxLength={500}
         accessibilityLabelledBy="sq-title"
       />
 
-      <Text style={styles.label} nativeID="sq-desc">Details</Text>
+      <Text style={styles.label} nativeID="sq-desc">{t("detailsLabel")}</Text>
       <TextInput
         style={[styles.input, styles.multiline, focus === "desc" && styles.inputFocus]}
         value={description}
         onChangeText={setDescription}
         onFocus={() => setFocus("desc")}
         onBlur={() => setFocus(null)}
-        placeholder="What you did, what you expected, what happened"
+        placeholder={t("detailsPlaceholder")}
         placeholderTextColor={placeholder}
         multiline
         maxLength={50000}
@@ -230,7 +226,7 @@ export function ReportView({
 
       {!reportOnly && (
         <>
-          <Text style={styles.label}>Severity</Text>
+          <Text style={styles.label}>{t("severityLabel")}</Text>
           <View style={styles.segment} accessibilityRole="radiogroup">
             {SEVERITIES.map((s) => {
               const active = s === severity;
@@ -243,7 +239,7 @@ export function ReportView({
                   accessibilityState={{ checked: active }}
                 >
                   <View style={[styles.sevDot, { backgroundColor: severityColor(theme, s) }]} />
-                  <Text style={[styles.segText, active && styles.segTextOn]}>{SEV_LABEL[s]}</Text>
+                  <Text style={[styles.segText, active && styles.segTextOn]}>{t(SEV_KEY[s])}</Text>
                 </Pressable>
               );
             })}
@@ -261,7 +257,7 @@ export function ReportView({
           <View style={[styles.checkbox, withShot && styles.checkboxOn]}>
             {withShot ? <Text style={styles.checkMark}>✓</Text> : null}
           </View>
-          <Text style={styles.checkLabel}>Attach a screenshot of this screen</Text>
+          <Text style={styles.checkLabel}>{t("attachScreenshot")}</Text>
         </Pressable>
       )}
 
@@ -274,7 +270,7 @@ export function ReportView({
               accessibilityRole="button"
             >
               <Text style={[styles.ghostText, recording && styles.ghostTextRec]}>
-                {recording ? `Stop  ${fmtDuration(recSeconds)}` : audio ? "Record again" : "Record a voice note"}
+                {recording ? t("stop", { time: fmtDuration(recSeconds) }) : audio ? t("recordAgain") : t("recordVoiceNote")}
               </Text>
             </Pressable>
           )}
@@ -284,13 +280,13 @@ export function ReportView({
               onPress={() => void pickVideo()}
               accessibilityRole="button"
             >
-              <Text style={styles.ghostText}>{video ? "Pick another video" : "Attach a video"}</Text>
+              <Text style={styles.ghostText}>{video ? t("pickAnotherVideo") : t("attachVideo")}</Text>
             </Pressable>
           )}
         </View>
       )}
       {audio && !recording && (
-        <Attached label="Voice note" onRemove={() => setAudio(null)} />
+        <Attached label={t("voiceNote")} onRemove={() => setAudio(null)} />
       )}
       {video && (
         <Attached
@@ -315,7 +311,7 @@ export function ReportView({
         {submitting ? (
           <ActivityIndicator color={theme.c["signal-foreground"]} />
         ) : (
-          <Text style={styles.submitText}>{copy?.submit ?? "Send report"}</Text>
+          <Text style={styles.submitText}>{t("submit")}</Text>
         )}
       </Pressable>
     </View>
@@ -324,13 +320,14 @@ export function ReportView({
 
 function Attached({ label, onRemove }: { label: string; onRemove: () => void }) {
   const styles = useThemedStyles(makeStyles);
+  const t = useStrings();
   return (
     <View style={styles.chip}>
       <Text style={styles.chipText} numberOfLines={1}>
         {label}
       </Text>
-      <Pressable onPress={onRemove} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Remove ${label}`}>
-        <Text style={styles.chipRemove}>Remove</Text>
+      <Pressable onPress={onRemove} hitSlop={10} accessibilityRole="button" accessibilityLabel={t("removeItem", { item: label })}>
+        <Text style={styles.chipRemove}>{t("remove")}</Text>
       </Pressable>
     </View>
   );

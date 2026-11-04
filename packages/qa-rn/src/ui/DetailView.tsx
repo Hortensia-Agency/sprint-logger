@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { stateColor, useTheme, useThemedStyles, type Theme } from "./theme";
 import { stateLabel } from "./QueueView";
+import { useStrings, type StringKey, type Translate } from "./strings";
 import type { SprintQaClient } from "../client";
 import { ExpoAudio } from "../optional-deps";
 import {
@@ -26,19 +27,17 @@ interface AudioNote {
   transcript?: Transcript | null;
 }
 
-const PARKED: Record<NonNullable<Transcript["parkReason"]>, string> = {
-  disabled: "Not transcribed: transcription is off for this workspace.",
-  over_cap: "Waiting: this month's transcription limit is reached.",
-  provider_auth: "Waiting: the transcription provider refused our key.",
+const PARKED: Record<NonNullable<Transcript["parkReason"]>, StringKey> = {
+  disabled: "transcriptOff",
+  over_cap: "transcriptOverCap",
+  provider_auth: "transcriptProviderAuth",
 };
 
-function transcriptLine(t: Transcript): string {
-  if (t.state === "done") return t.text || "No speech found in this note.";
-  if (t.state === "transcribing") return "Transcribing";
-  if (t.state === "parked") return PARKED[t.parkReason ?? "disabled"];
-  return t.failedReason === "too_long"
-    ? "Not transcribed: voice notes are limited to 2 minutes."
-    : "Transcription failed.";
+function transcriptLine(tr: Transcript, t: Translate): string {
+  if (tr.state === "done") return tr.text || t("transcriptEmpty");
+  if (tr.state === "transcribing") return t("transcribing");
+  if (tr.state === "parked") return t(PARKED[tr.parkReason ?? "disabled"]);
+  return tr.failedReason === "too_long" ? t("transcriptTooLong") : t("transcriptFailed");
 }
 
 interface TaskDetail {
@@ -58,6 +57,7 @@ export function DetailView({
   onBack: () => void;
 }) {
   const theme = useTheme();
+  const t = useStrings();
   const styles = useThemedStyles(makeStyles);
   const [data, setData] = useState<TaskDetail | null>(null);
   const [error, setError] = useState(false);
@@ -105,22 +105,22 @@ export function DetailView({
     try {
       const part = await pickDemoVideo();
       if (part) {
-        setVideoMsg("Uploading video…");
+        setVideoMsg(t("uploadingVideo"));
         await uploadDemoVideo(client, taskId, part);
         setVideoMsg(null);
         load();
       }
     } catch (e) {
-      setVideoMsg(e instanceof Error ? e.message : "Video upload failed.");
+      setVideoMsg(e instanceof Error ? e.message : t("videoUploadFailedShort"));
     } finally {
       setVideoBusy(false);
     }
   }
 
-  if (error) return <Text style={styles.empty}>Couldn&apos;t load this task.</Text>;
+  if (error) return <Text style={styles.empty}>{t("taskLoadFailed")}</Text>;
   if (!data) {
     return (
-      <View style={{ gap: 10, marginTop: 8 }} accessibilityLabel="Loading the task">
+      <View style={{ gap: 10, marginTop: 8 }} accessibilityLabel={t("loadingTask")}>
         <View style={[styles.skeleton, { height: 12, width: 60 }]} />
         <View style={[styles.skeleton, { height: 18, width: "80%" }]} />
         <View style={[styles.skeleton, { height: 12, width: "40%" }]} />
@@ -132,13 +132,13 @@ export function DetailView({
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
       <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" style={styles.backHit}>
-        <Text style={styles.back}>‹ Queue</Text>
+        <Text style={styles.back}>‹ {t("backToQueue")}</Text>
       </Pressable>
       <Text style={styles.title}>{data.task.title}</Text>
       <View style={styles.stateRow}>
         <View style={[styles.ring, { borderColor: stateColor(theme, data.task.state) }]} />
         <Text style={styles.state}>
-          {stateLabel(data.task.state)}, {data.activeVerifiedCount} verified
+          {t("verifiedCount", { state: stateLabel(data.task.state, t), count: data.activeVerifiedCount })}
         </Text>
       </View>
       {data.task.description ? (
@@ -147,7 +147,7 @@ export function DetailView({
 
       {data.audioNotes && data.audioNotes.length > 0 && (
         <View style={styles.audioWrap}>
-          <Text style={styles.audioHeading}>Voice notes</Text>
+          <Text style={styles.audioHeading}>{t("voiceNotes")}</Text>
           {data.audioNotes.map((a) => (
             <View key={a.id}>
               <AudioNotePlayer url={a.url} />
@@ -156,7 +156,7 @@ export function DetailView({
                   style={a.transcript.state === "done" ? styles.transcript : styles.transcriptMuted}
                   selectable={a.transcript.state === "done"}
                 >
-                  {transcriptLine(a.transcript)}
+                  {transcriptLine(a.transcript, t)}
                 </Text>
               ) : null}
             </View>
@@ -167,7 +167,7 @@ export function DetailView({
       {(videoAttachAvailable() ||
         (data.demoVideos && data.demoVideos.length > 0)) && (
         <View style={styles.audioWrap}>
-          <Text style={styles.audioHeading}>Demo videos</Text>
+          <Text style={styles.audioHeading}>{t("demoVideos")}</Text>
           {data.demoVideos?.map((v) => (
             <Text key={v.id} style={styles.videoRow} numberOfLines={1}>
               {v.filename}
@@ -181,7 +181,7 @@ export function DetailView({
               accessibilityRole="button"
             >
               <Text style={styles.audioBtnText}>
-                {videoBusy ? "Uploading…" : "Attach a demo video"}
+                {videoBusy ? t("uploading") : t("attachDemoVideo")}
               </Text>
             </Pressable>
           )}
@@ -193,14 +193,14 @@ export function DetailView({
         style={styles.input}
         value={notes}
         onChangeText={setNotes}
-        placeholder="Notes for the team (optional)"
+        placeholder={t("notesPlaceholder")}
         placeholderTextColor={theme.c["subtle-foreground"]}
         multiline
       />
 
       <View style={styles.actions}>
         <Pressable style={[styles.btn, styles.btnGhost]} onPress={take} disabled={busy} accessibilityRole="button">
-          <Text style={styles.btnGhostText}>Take</Text>
+          <Text style={styles.btnGhostText}>{t("take")}</Text>
         </Pressable>
         <Pressable
           style={[styles.btn, styles.btnDanger]}
@@ -208,7 +208,7 @@ export function DetailView({
           disabled={busy}
           accessibilityRole="button"
         >
-          <Text style={styles.btnDangerText}>Bug found</Text>
+          <Text style={styles.btnDangerText}>{t("bugFound")}</Text>
         </Pressable>
         <Pressable
           style={[styles.btn, styles.btnSignal]}
@@ -216,7 +216,7 @@ export function DetailView({
           disabled={busy}
           accessibilityRole="button"
         >
-          <Text style={styles.btnSignalText}>Verify</Text>
+          <Text style={styles.btnSignalText}>{t("verify")}</Text>
         </Pressable>
       </View>
     </ScrollView>
@@ -230,6 +230,7 @@ export function DetailView({
  */
 function AudioNotePlayer({ url }: { url: string }) {
   const theme = useTheme();
+  const t = useStrings();
   const styles = useThemedStyles(makeStyles);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -287,7 +288,7 @@ function AudioNotePlayer({ url }: { url: string }) {
         <ActivityIndicator color={theme.c["muted-foreground"]} />
       ) : (
         <Text style={styles.audioBtnText}>
-          {disabled ? "Voice note (install expo-av to play)" : playing ? "Pause voice note" : "Play voice note"}
+          {disabled ? t("voiceNoteNoPlayer") : playing ? t("pauseVoiceNote") : t("playVoiceNote")}
         </Text>
       )}
     </Pressable>

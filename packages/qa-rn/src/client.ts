@@ -79,8 +79,9 @@ export class SprintQaClient {
   }
 
   /** L1 bootstrap — unauthed; only the widget key. */
-  config(): Promise<WidgetConfig> {
-    return this.json<WidgetConfig>("/api/widget/config", { method: "GET" }, false);
+  config(appearance?: string): Promise<WidgetConfig> {
+    const q = appearance ? `?appearance=${encodeURIComponent(appearance)}` : "";
+    return this.json<WidgetConfig>(`/api/widget/config${q}`, { method: "GET" }, false);
   }
 
   me(): Promise<WidgetMe> {
