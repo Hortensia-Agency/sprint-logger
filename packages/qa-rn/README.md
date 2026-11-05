@@ -123,7 +123,7 @@ The token is **tenant-scoped and expires** (default 90 days). Revoking it in
 Sprint denies it on the next call. That's the only fast kill switch (see
 below).
 
-## The look, and each person's switch (v0.5.0+)
+## The look, and each person's switch (v0.5.0+, drag to hide v0.7.0+)
 
 The widget draws with Sprint's own tokens, in light and dark, following the
 device unless the project picks one. Everything else about its look comes from
@@ -132,20 +132,51 @@ corners, the bubble's icon, size, side and label, the pages it hides on, and
 the panel's wording. It arrives with the config call, so it changes without a
 rebuild.
 
-Two props belong to your app:
+Pass `route` so the project's hidden pages apply:
 
 ```tsx
 <SprintQaWidget
   host="my-app"
   widgetKey={process.env.EXPO_PUBLIC_SPRINT_QA_KEY}
-  visible={user.reportBugWidget}   // the person's "Report a problem" switch
-  route={currentRouteName}         // lets the project's hidden pages apply
+  route={currentRouteName}
 />
 ```
 
 `visible={false}` hides the bubble and the sheet without remounting the
-widget. Store the preference in your own backend (or on the device for people
-who aren't signed in); Sprint never sees it.
+widget, for reasons of your app's own.
+
+### Hiding the bubble, and bringing it back (v0.7.0+)
+
+People hide the bubble themselves: while it is dragged, a **Drop to hide**
+target rises at the bottom of the screen, and dropping the bubble on it hides
+it, with a short notice that offers Undo. Screen reader users get the same as a
+"Hide button" action on the bubble. The choice is stored on the device
+(AsyncStorage, key `sprint-qa-hidden`), survives restarts, and never reaches
+Sprint. Nothing draws until it has loaded, so a hidden bubble never flashes on
+launch.
+
+Your settings screen turns it back on. Give it a switch bound to the stored
+value:
+
+```tsx
+import { Switch } from "react-native";
+import { setSprintQaHidden, useSprintQaHidden } from "@sprint-logger/qa-rn";
+
+function ReportButtonSetting() {
+  const hidden = useSprintQaHidden(); // null while loading
+  return (
+    <Switch
+      value={hidden === false}
+      disabled={hidden === null}
+      onValueChange={(on) => void setSprintQaHidden(!on)}
+    />
+  );
+}
+```
+
+The switch follows a drop on the target at once, and the bubble comes back as
+soon as the switch is turned on. `getSprintQaHidden()` reads the value outside
+React.
 
 ### Setting the look and the text in code (v0.6.0+)
 

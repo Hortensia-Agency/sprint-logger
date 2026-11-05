@@ -4,12 +4,18 @@
  * the screen; release projects the flick's momentum, picks the edge nearest
  * that projection and springs there from where the bubble is, carrying the
  * release velocity. Grabbing it mid-flight starts a new drag from there.
+ *
+ * With onHide, a Hide target rises at the bottom while it is dragged. Near the
+ * target the bubble is pulled into it; let go there and it shrinks away into
+ * the target and onHide runs.
  */
 
 import React, { useEffect } from "react";
 import { Image, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
+  Easing,
+  interpolate,
   runOnJS,
   useAnimatedStyle,
   useReducedMotion,
@@ -20,11 +26,16 @@ import Animated, {
 import { useTheme, useThemedStyles, type Theme } from "./theme";
 import { appleSpring, project, rubberband, FAB_RESPONSE, MAX_FLICK } from "./motion";
 import { loadFabPos, saveFabPos } from "../storage";
+import { useSafeAreaInsetsMaybe } from "./insets";
+import { useStrings } from "./strings";
 
 const EDGE_GAP = 20;
 const BOTTOM_GAP = 96; // clear of a host tab bar on first launch
 const TAP_SLOP = 10;
 const MIN_TARGET = 44;
+const HIDE_SIZE = 56; // the Hide target's circle
+const HIDE_GAP = 28; // from the bottom safe edge to the circle
+const HIDE_PULL = 64; // bubble center within this of the target's: it's pulled in
 
 export type BubbleIcon = "bug" | "chat" | "help" | "logo";
 
@@ -36,8 +47,11 @@ export function Fab({
   logoUrl,
   label,
   accessibilityLabel,
+  onHide,
 }: {
   onPress: () => void;
+  /** Set to offer drag-to-hide. Runs once the bubble has gone into the target. */
+  onHide?: () => void;
   size?: number;
   side?: "left" | "right";
   icon?: BubbleIcon;
@@ -49,11 +63,19 @@ export function Fab({
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const reduceMotion = useReducedMotion();
+  const insets = useSafeAreaInsetsMaybe();
+  const t = useStrings();
 
   const minX = EDGE_GAP;
   const maxX = width - size - EDGE_GAP;
   const minY = EDGE_GAP * 2;
   const maxY = height - size - BOTTOM_GAP;
+  // Free to go lower while dragging when the Hide target sits down there.
+  const dragMaxY = onHide ? height - size - insets.bottom - 8 : maxY;
+  const hideCx = width / 2;
+  const hideCy = height - insets.bottom - HIDE_GAP - HIDE_SIZE / 2;
+  const pullX = hideCx - size / 2;
+  const pullY = hideCy - size / 2;
 
   const tx = useSharedValue(side === "left" ? minX : maxX);
   const ty = useSharedValue(maxY);
@@ -61,6 +83,10 @@ export function Fab({
   const startY = useSharedValue(0);
   const press = useSharedValue(1);
   const labelW = useSharedValue(0);
+  const hideShown = useSharedValue(0); // the target, 0 gone to 1 up
+  const over = useSharedValue(0); // bubble over the target, 0 or 1 (a flag)
+  const pull = useSharedValue(0); // how far the bubble is pulled into it
+  const gone = useSharedValue(0); // the bubble shrinking away after a drop
 
   useEffect(() => {
     let alive = true;
@@ -104,14 +130,35 @@ export function Fab({
       // From where the bubble is now, even mid-spring.
       startX.value = tx.value;
       startY.value = ty.value;
+      over.value = 0;
+      pull.value = 0;
+      if (onHide) hideShown.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
     })
     .onUpdate((e) => {
       const x = startX.value + e.translationX;
       const y = startY.value + e.translationY;
       tx.value = x < minX ? minX + rubberband(x - minX, size) : x > maxX ? maxX + rubberband(x - maxX, size) : x;
-      ty.value = y < minY ? minY + rubberband(y - minY, size) : y > maxY ? maxY + rubberband(y - maxY, size) : y;
+      ty.value = y < minY ? minY + rubberband(y - minY, size) : y > dragMaxY ? dragMaxY + rubberband(y - dragMaxY, size) : y;
+      if (!onHide) return;
+      const near = Math.hypot(tx.value + size / 2 - hideCx, ty.value + size / 2 - hideCy) < HIDE_PULL ? 1 : 0;
+      if (near !== over.value) {
+        over.value = near;
+        pull.value = reduceMotion ? near : withSpring(near, appleSpring(1, 0.25));
+      }
     })
     .onEnd((e) => {
+      if (onHide) hideShown.value = withTiming(0, { duration: 140, easing: Easing.in(Easing.cubic) });
+      if (onHide && over.value === 1) {
+        // Into the target from where it shows now, then gone.
+        tx.value = pullX;
+        ty.value = pullY;
+        pull.value = 0;
+        over.value = 0;
+        gone.value = withTiming(1, { duration: 180, easing: Easing.in(Easing.cubic) }, (done) => {
+          if (done) runOnJS(onHide)();
+        });
+        return;
+      }
       const vx = clamp(e.velocityX, -MAX_FLICK, MAX_FLICK);
       const vy = clamp(e.velocityY, -MAX_FLICK, MAX_FLICK);
       const landX = tx.value + project(vx) + size / 2 < width / 2 ? minX : maxX;
@@ -131,9 +178,24 @@ export function Fab({
 
   const gesture = Gesture.Race(pan, tap);
 
+  // Pulled toward the target's center by `pull`, so the finger still owns it.
   const bubbleStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: press.value }],
+    opacity: 1 - gone.value,
+    transform: [
+      { translateX: tx.value + (pullX - tx.value) * pull.value },
+      { translateY: ty.value + (pullY - ty.value) * pull.value },
+      { scale: press.value * (1 - 0.4 * gone.value) },
+    ],
   }));
+
+  const hideStyle = useAnimatedStyle(() => ({
+    opacity: hideShown.value,
+    transform: [
+      { translateY: interpolate(hideShown.value, [0, 1], [16, 0]) },
+      { scale: interpolate(hideShown.value, [0, 1], [0.9, 1]) * (1 + 0.15 * pull.value) },
+    ],
+  }));
+  const hideFillStyle = useAnimatedStyle(() => ({ opacity: pull.value }));
 
   // The label sits beside the bubble on whichever side has room.
   const labelStyle = useAnimatedStyle(() => {
@@ -152,6 +214,27 @@ export function Fab({
 
   return (
     <>
+      {onHide ? (
+        <Animated.View
+          pointerEvents="none"
+          importantForAccessibility="no-hide-descendants"
+          style={[
+            styles.hide,
+            { left: hideCx - 80, top: hideCy - HIDE_SIZE / 2 - 34, width: 160 },
+            hideStyle,
+          ]}
+        >
+          <View style={styles.hideLabel}>
+            <Text style={styles.hideLabelText} numberOfLines={1}>
+              {t("hideTarget")}
+            </Text>
+          </View>
+          <View style={styles.hideCircle}>
+            <XGlyph color={theme.c["muted-foreground"]} />
+            <Animated.View style={[StyleSheet.absoluteFill, styles.hideRing, hideFillStyle]} />
+          </View>
+        </Animated.View>
+      ) : null}
       {label ? (
         <Animated.View
           style={[styles.label, labelStyle]}
@@ -173,6 +256,13 @@ export function Fab({
           accessible
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
+          accessibilityActions={
+            onHide ? [{ name: "activate" }, { name: "hide", label: t("hideAction") }] : undefined
+          }
+          onAccessibilityAction={(e) => {
+            if (e.nativeEvent.actionName === "hide") onHide?.();
+            else onPress();
+          }}
           onAccessibilityTap={onPress}
         >
           <View
@@ -200,6 +290,17 @@ export function Fab({
 function clamp(v: number, lo: number, hi: number): number {
   "worklet";
   return Math.min(Math.max(v, lo), hi);
+}
+
+/** The Hide target's cross, two bars: no icon dependency in the SDK. */
+function XGlyph({ color }: { color: string }) {
+  const bar = { position: "absolute" as const, width: 18, height: 2, borderRadius: 1, backgroundColor: color };
+  return (
+    <View style={{ width: 18, height: 18, alignItems: "center", justifyContent: "center" }}>
+      <View style={[bar, { transform: [{ rotate: "45deg" }] }]} />
+      <View style={[bar, { transform: [{ rotate: "-45deg" }] }]} />
+    </View>
+  );
 }
 
 /** A speech bubble drawn from Views: no icon or SVG dependency in the SDK. */
@@ -285,5 +386,35 @@ function makeStyles(t: Theme) {
       elevation: 2,
     },
     labelText: { color: t.c.foreground, fontSize: 13, fontWeight: "600" as const },
+    hide: { position: "absolute" as const, alignItems: "center" as const, zIndex: 9997 },
+    hideLabel: {
+      height: 26,
+      marginBottom: 8,
+      justifyContent: "center" as const,
+      paddingHorizontal: 10,
+      borderRadius: t.radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.c.border,
+      backgroundColor: t.c["bg-elev-1"],
+    },
+    hideLabelText: { color: t.c.foreground, fontSize: 13, fontWeight: "600" as const },
+    hideCircle: {
+      width: HIDE_SIZE,
+      height: HIDE_SIZE,
+      borderRadius: HIDE_SIZE / 2,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      overflow: "hidden" as const,
+      borderWidth: 1,
+      borderColor: t.c["border-strong"],
+      backgroundColor: t.c["bg-elev-1"],
+      shadowColor: "#000",
+      shadowOpacity: t.dark ? 0.4 : 0.12,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 4,
+    },
+    // Over the target: a ring in the text color, so the bubble reads against it in both themes.
+    hideRing: { borderRadius: HIDE_SIZE / 2, borderWidth: 2, borderColor: t.c.foreground },
   };
 }

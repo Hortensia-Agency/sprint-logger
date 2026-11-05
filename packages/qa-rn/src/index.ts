@@ -3,6 +3,7 @@ export type {
   SprintQaWidgetProps,
   HostRuntimeConfig,
 } from "./SprintQaWidget";
+export { getSprintQaHidden, setSprintQaHidden, useSprintQaHidden } from "./hidden";
 export { SprintQaClient, SprintQaError } from "./client";
 export { makeScreenshotCapture } from "./screenshot";
 export type { ScreenshotPart } from "./screenshot";
