@@ -29,8 +29,11 @@
  *
  * Static usage (key known at build time) is still supported via `widgetKey`.
  *
- *   3. The person's own switch. Pass `visible={false}` when the user turned the
- *      button off in the host app's settings; it hides without remounting.
+ *   3. The person's own switch. Dragging the bubble onto the Hide target hides
+ *      it on this device (stored in AsyncStorage, kept across launches). The
+ *      host's settings screen turns it back on with setSprintQaHidden(false),
+ *      reading the current value with useSprintQaHidden().
+ *      `visible={false}` still hides it for reasons of the host's own.
  *
  * The look (accent, theme, corners, bubble, wording) comes from the project's
  * Appearance settings in Sprint, through the same config call. No rebuild.
@@ -38,10 +41,25 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Image, Pressable, Text, View } from "react-native";
+import { AppState, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { Fab } from "./ui/Fab";
+import { HiddenNotice } from "./ui/HiddenNotice";
+import { setSprintQaHidden, useSprintQaHidden } from "./hidden";
 import { BottomSheet } from "./ui/BottomSheet";
-import { ReportView } from "./ui/ReportView";
+import { DemoView, ReportLauncher, SentView, type DemoDraft } from "./ui/ReportView";
+import { ReviewView, type ReviewPayload } from "./ui/ReviewView";
+import { AreaSelect } from "./ui/AreaSelect";
+import { Countdown, RecordBar } from "./ui/RecordOverlay";
+import { ImagePicker } from "./optional-deps";
+import { pickDemoVideo, uploadDemoVideo, uploadStandaloneDemo, videoAttachAvailable, type VideoPart } from "./video";
+import {
+  cancelScreenRecording,
+  prepareScreenRecording,
+  screenRecordAvailable,
+  startScreenRecording,
+  stopScreenRecording,
+} from "./screen-record";
+import { captureNavigation, startCapture, stopCapture } from "./capture";
 import { makeAudioRecorder, type AudioRecorder } from "./audio";
 import { QueueView } from "./ui/QueueView";
 import { DetailView } from "./ui/DetailView";
@@ -49,13 +67,32 @@ import { PatGate } from "./ui/PatGate";
 import type { OAuthDeps } from "./oauth";
 import { SprintQaClient } from "./client";
 import { hostMatches, passesL0, isPatShape, resolveHostKey } from "./config";
-import { loadPat, savePat } from "./storage";
+import { loadPat, savePat, takeResume } from "./storage";
 import type { HostContext } from "./context";
 import type { AppearanceOverride, CaptureProfile, WidgetConfig } from "./contract";
-import { STRINGS, StringsProvider, useStrings, type WidgetStrings } from "./ui/strings";
+import { STRINGS, StringsProvider, useStrings, type StringKey, type WidgetStrings } from "./ui/strings";
 import { ThemeProvider, useThemedStyles, type Theme } from "./ui/theme";
 
-type Screen = "report" | "queue" | "detail";
+type Screen = "report" | "queue" | "detail" | "demo";
+
+/** Where a screen recording goes once it stops. */
+type RecordTarget = { kind: "bug" } | { kind: "demo" } | { kind: "task"; taskId: number };
+
+/** The full-screen steps a capture walks through, outside the sheet. */
+type Flow =
+  | { kind: "area"; uri: string; w: number; h: number }
+  | { kind: "countdown"; target: RecordTarget }
+  | { kind: "recording"; target: RecordTarget; startedAt: number }
+  | { kind: "review"; payload: ReviewPayload };
+
+/** A message shown later inside the sheet, translated where it is drawn. */
+export type Msg = { key: StringKey } | { raw: string };
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function imageSize(uri: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve, reject) => Image.getSize(uri, (w, h) => resolve({ w, h }), reject));
+}
 
 /** What the host's backend hands the widget at runtime. */
 export interface HostRuntimeConfig {
@@ -115,8 +152,9 @@ export interface SprintQaWidgetProps {
    */
   getContext?: () => HostContext | undefined;
   /**
-   * The host app's per-user switch ("Report a problem" in its settings). False
-   * hides the bubble and sheet; the widget keeps its state. Defaults to true.
+   * Hides the bubble and sheet while false; the widget keeps its state.
+   * Defaults to true. The person's own switch is separate: dragging onto Hide
+   * and setSprintQaHidden(), stored on the device.
    */
   visible?: boolean;
   /**
@@ -312,10 +350,153 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
     };
   }, [client, hasPat]);
 
+  // ── Capture flows ──────────────────────────────────────────────────────
+  const [flow, setFlow] = useState<Flow | null>(null);
+  // True while the screen is captured: the widget draws nothing, so the shot
+  // shows the app alone.
+  const [hiding, setHiding] = useState(false);
+  // The person's own choice on this device; null until it has loaded, and
+  // nothing draws until then so a hidden bubble never flashes on launch.
+  const hiddenByUser = useSprintQaHidden();
+  const [hideNotice, setHideNotice] = useState(false);
+  const [sent, setSent] = useState<{ held: boolean } | null>(null);
+  const [launcherMsg, setLauncherMsg] = useState<Msg | null>(null);
+  const [withMic, setWithMic] = useState(false);
+  const [demoDraft, setDemoDraft] = useState<DemoDraft>({ title: "", description: "", video: null });
+  const [detailNotice, setDetailNotice] = useState<Msg | null>(null);
+
+  // Coming back from the sign-in browser can rebuild the host's screen and
+  // reset the widget closed; reopen it where the person left it.
+  useEffect(() => {
+    if (!hasPat || !remoteConfig) return;
+    void takeResume().then((resume) => {
+      if (resume) setOpen(true);
+    });
+  }, [hasPat, remoteConfig]);
+
+  // Screen changes become the action track of a recording's capture.
+  useEffect(() => {
+    if (props.route) captureNavigation(props.route);
+  }, [props.route]);
+
   function onPatSubmit(pat: string) {
     client?.setPat(pat);
     void savePat(pat);
     setHasPat(true);
+    void takeResume();
+    setOpen(true);
+  }
+
+  async function startScreenshot() {
+    if (!props.captureScreenshot) return;
+    setLauncherMsg(null);
+    setOpen(false);
+    setHiding(true);
+    // Let the sheet's close and the hidden frame reach the screen first.
+    await wait(450);
+    const shot = await props.captureScreenshot().catch(() => null);
+    setHiding(false);
+    if (!shot) {
+      setOpen(true);
+      setLauncherMsg({ key: "screenshotFailed" });
+      return;
+    }
+    try {
+      const { w, h } = await imageSize(shot.uri);
+      setFlow({ kind: "area", uri: shot.uri, w, h });
+    } catch {
+      setOpen(true);
+      setLauncherMsg({ key: "screenshotFailed" });
+    }
+  }
+
+  async function pickPhoto() {
+    setLauncherMsg(null);
+    const res = await ImagePicker?.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 1 }).catch(() => null);
+    const a = res && !res.canceled ? res.assets?.[0] : null;
+    if (!a) return;
+    const size = a.width && a.height ? { w: a.width, h: a.height } : await imageSize(a.uri).catch(() => null);
+    if (!size) return;
+    setOpen(false);
+    setFlow({ kind: "review", payload: { kind: "screenshot", uri: a.uri, imageW: size.w, imageH: size.h, crop: { x: 0, y: 0, w: size.w, h: size.h } } });
+  }
+
+  async function pickVideo() {
+    setLauncherMsg(null);
+    try {
+      const part = await pickDemoVideo();
+      if (!part) return;
+      setOpen(false);
+      setFlow({ kind: "review", payload: { kind: "video", video: part, capture: null } });
+    } catch (e) {
+      setLauncherMsg(e instanceof Error ? { raw: e.message } : { key: "videoPickFailed" });
+    }
+  }
+
+  async function startRecording(target: RecordTarget) {
+    setLauncherMsg(null);
+    const ok = await prepareScreenRecording(withMic).catch(() => false);
+    if (!ok) {
+      setLauncherMsg({ key: "captureBlocked" });
+      return;
+    }
+    setOpen(false);
+    setFlow({ kind: "countdown", target });
+  }
+
+  async function beginRecording(target: RecordTarget) {
+    try {
+      await startScreenRecording(withMic, () => {
+        stopCapture();
+        setFlow(null);
+        setOpen(true);
+        setLauncherMsg({ key: "recordingFailed" });
+      });
+    } catch {
+      setFlow(null);
+      setOpen(true);
+      setLauncherMsg({ key: "captureBlocked" });
+      return;
+    }
+    if (target.kind === "bug" && remoteConfig?.captureEnabled && client) {
+      startCapture({ profile: me?.captureProfile ?? "strict", ignoreOrigin: client.origin });
+    }
+    setFlow({ kind: "recording", target, startedAt: Date.now() });
+  }
+
+  async function finishRecording(target: RecordTarget, startedAt: number) {
+    const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const capture = target.kind === "bug" ? stopCapture() : null;
+    let part: VideoPart | null = null;
+    try {
+      part = await stopScreenRecording();
+    } catch {
+      part = null;
+    }
+    setFlow(null);
+    if (!part) {
+      setOpen(true);
+      setLauncherMsg({ key: "recordingFailed" });
+      return;
+    }
+    const video = { ...part, durationSec: seconds };
+    if (target.kind === "bug") {
+      setFlow({ kind: "review", payload: { kind: "video", video, capture } });
+    } else if (target.kind === "demo") {
+      setDemoDraft((d) => ({ ...d, video }));
+      setScreen("demo");
+      setOpen(true);
+    } else {
+      setScreen("detail");
+      setTaskId(target.taskId);
+      setOpen(true);
+      setDetailNotice({ key: "demoUploading" });
+      if (client) {
+        uploadDemoVideo(client, target.taskId, video)
+          .then(() => setDetailNotice({ key: "demoAttached" }))
+          .catch((e) => setDetailNotice(e instanceof Error ? { raw: e.message } : { key: "videoUploadFailedShort" }));
+      }
+    }
   }
 
   if (!l0 || hostOff || gated || !remoteConfig || !client) return null;
@@ -324,10 +505,18 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
   if (props.visible === false || routeHidden(props.route, appearance?.hiddenRoutes)) return null;
 
   const openSheet = () => {
+    if (flow) return;
     setScreen("report");
     setTaskId(null);
+    setSent(null);
+    setLauncherMsg(null);
     setOpen(true);
   };
+
+  const recordable = screenRecordAvailable();
+
+  const reportOnly = me?.reportOnly ?? true;
+  const captureProfile = me?.captureProfile ?? "strict";
 
   const renderBody = () => {
     if (!hasPat)
@@ -340,40 +529,144 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
           oauthDeps={props.oauthDeps}
         />
       );
-    const reportOnly = me?.reportOnly ?? true;
+    if (sent) {
+      return (
+        <SentView
+          held={sent.held}
+          onDone={() => {
+            setSent(null);
+            setOpen(false);
+          }}
+        />
+      );
+    }
     if (!reportOnly && screen === "detail" && taskId != null) {
       return (
         <DetailView
           client={activeClient}
           taskId={taskId}
-          onBack={() => setScreen("queue")}
-        />
-      );
-    }
-    if (!reportOnly && screen === "queue") {
-      return (
-        <QueueView
-          client={activeClient}
-          onOpenTask={(id) => {
-            setTaskId(id);
-            setScreen("detail");
+          onBack={() => {
+            setDetailNotice(null);
+            setScreen("queue");
           }}
+          onRecordDemo={recordable ? () => void startRecording({ kind: "task", taskId }) : undefined}
+          notice={detailNotice ? <MsgText msg={detailNotice} /> : null}
         />
       );
     }
     return (
       <>
         {!reportOnly && <Tabs screen={screen} onChange={setScreen} />}
-        <ReportView
-          client={activeClient}
-          captureScreenshot={props.captureScreenshot}
-          audioRecorder={recorderRef.current}
-          getContext={props.getContext}
-          reportOnly={reportOnly}
-          captureProfile={me?.captureProfile ?? "strict"}
-          onReported={() => setOpen(false)}
-        />
+        {!reportOnly && screen === "queue" ? (
+          <QueueView
+            client={activeClient}
+            onOpenTask={(id) => {
+              setTaskId(id);
+              setScreen("detail");
+            }}
+          />
+        ) : !reportOnly && screen === "demo" ? (
+          <DemoView
+            draft={demoDraft}
+            onDraft={setDemoDraft}
+            canRecord={recordable}
+            withMic={withMic}
+            onWithMic={setWithMic}
+            onRecord={() => void startRecording({ kind: "demo" })}
+            onPublish={async () => {
+              if (!demoDraft.video) return null;
+              try {
+                await uploadStandaloneDemo(activeClient, demoDraft.video, {
+                  title: demoDraft.title.trim(),
+                  description: demoDraft.description.trim() || undefined,
+                });
+                setDemoDraft({ title: "", description: "", video: null });
+                return null;
+              } catch (e) {
+                return e instanceof Error ? e.message : "";
+              }
+            }}
+          />
+        ) : (
+          <ReportLauncher
+            route={props.getContext?.()?.route ?? props.route}
+            canScreenshot={!!props.captureScreenshot}
+            canRecord={recordable}
+            canPickPhoto={!!ImagePicker}
+            canPickVideo={!recordable && videoAttachAvailable()}
+            withMic={withMic}
+            onWithMic={setWithMic}
+            onScreenshot={() => void startScreenshot()}
+            onRecord={() => void startRecording({ kind: "bug" })}
+            onPickPhoto={() => void pickPhoto()}
+            onPickVideo={() => void pickVideo()}
+            onWrite={() => {
+              setOpen(false);
+              setFlow({ kind: "review", payload: { kind: "text" } });
+            }}
+            message={launcherMsg ? <MsgText msg={launcherMsg} /> : null}
+          />
+        )}
       </>
+    );
+  };
+
+  const renderFlow = () => {
+    if (!flow) return null;
+    if (flow.kind === "area") {
+      return (
+        <AreaSelect
+          uri={flow.uri}
+          imageW={flow.w}
+          imageH={flow.h}
+          onCancel={() => {
+            setFlow(null);
+            setOpen(true);
+          }}
+          onPick={(crop) =>
+            setFlow({ kind: "review", payload: { kind: "screenshot", uri: flow.uri, imageW: flow.w, imageH: flow.h, crop } })
+          }
+        />
+      );
+    }
+    if (flow.kind === "countdown") {
+      return (
+        <Countdown
+          withMic={withMic}
+          onDone={() => void beginRecording(flow.target)}
+          onCancel={() => {
+            void cancelScreenRecording();
+            setFlow(null);
+            setOpen(true);
+          }}
+        />
+      );
+    }
+    if (flow.kind === "recording") {
+      return <RecordBar startedAt={flow.startedAt} onStop={() => void finishRecording(flow.target, flow.startedAt)} />;
+    }
+    return (
+      <ReviewView
+        payload={flow.payload}
+        client={activeClient}
+        reportOnly={reportOnly}
+        captureProfile={captureProfile}
+        getContext={props.getContext}
+        legacyRecorder={recorderRef.current}
+        onDiscard={() => {
+          setFlow(null);
+          setOpen(true);
+        }}
+        onSent={(_taskId, held) => {
+          setFlow(null);
+          if (reportOnly || held) {
+            setSent({ held });
+          } else {
+            setScreen("queue");
+          }
+          setOpen(true);
+        }}
+      />
     );
   };
 
@@ -381,7 +674,27 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
   return (
     <ThemeProvider appearance={appearance} dir={props.dir}>
       <StringsProvider strings={props.strings} copy={appearance?.copy}>
+        {hiding ? null : hiddenByUser !== false ? (
+          hideNotice ? (
+            <HiddenNotice
+              onUndo={() => {
+                setHideNotice(false);
+                void setSprintQaHidden(false);
+              }}
+              onDone={() => setHideNotice(false)}
+            />
+          ) : null
+        ) : (
+          <>
         <Fab
+          onHide={
+            flow || open
+              ? undefined
+              : () => {
+                  setHideNotice(true);
+                  void setSprintQaHidden(true);
+                }
+          }
           onPress={openSheet}
           size={appearance?.bubble.size}
           side={appearance?.bubble.side}
@@ -403,9 +716,22 @@ export function SprintQaWidget(props: SprintQaWidgetProps) {
         >
           <View>{renderBody()}</View>
         </BottomSheet>
+        {flow ? (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 10002, elevation: 10002 }]} pointerEvents="box-none">
+            {renderFlow()}
+          </View>
+        ) : null}
+          </>
+        )}
       </StringsProvider>
     </ThemeProvider>
   );
+}
+
+/** A message resolved in the host's language, inside the strings provider. */
+function MsgText({ msg }: { msg: Msg }) {
+  const t = useStrings();
+  return <>{"key" in msg ? t(msg.key) : msg.raw}</>;
 }
 
 function SheetHeader({
@@ -450,7 +776,7 @@ function Tabs({
   const t = useStrings();
   return (
     <View style={styles.tabs} accessibilityRole="tablist">
-      {(["report", "queue"] as const).map((s) => (
+      {(["report", "queue", "demo"] as const).map((s) => (
         <Pressable
           key={s}
           style={[styles.tab, screen === s && styles.tabOn]}
@@ -458,7 +784,9 @@ function Tabs({
           accessibilityRole="tab"
           accessibilityState={{ selected: screen === s }}
         >
-          <Text style={[styles.tabText, screen === s && styles.tabTextOn]}>{s === "report" ? t("tabReport") : t("tabQueue")}</Text>
+          <Text style={[styles.tabText, screen === s && styles.tabTextOn]}>
+            {s === "report" ? t("tabReport") : s === "queue" ? t("tabQueue") : t("tabDemo")}
+          </Text>
         </Pressable>
       ))}
     </View>

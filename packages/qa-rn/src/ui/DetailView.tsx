@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { stateColor, useTheme, useThemedStyles, type Theme } from "./theme";
 import { stateLabel } from "./QueueView";
 import { useStrings, type StringKey, type Translate } from "./strings";
 import type { SprintQaClient } from "../client";
-import { ExpoAudio } from "../optional-deps";
+import { ExpoAudio, ExpoAudioModern } from "../optional-deps";
+import { SprintQaError } from "../client";
+import { Lightbox, type LightboxItem } from "./Lightbox";
 import {
   pickDemoVideo,
   uploadDemoVideo,
@@ -44,17 +46,26 @@ interface TaskDetail {
   task: { id: number; title: string; state: string; description: string | null };
   activeVerifiedCount: number;
   audioNotes?: AudioNote[];
-  demoVideos?: { id: number; filename: string }[];
+  demoVideos?: { id: number; filename: string; url?: string }[];
+  screenshots?: { id: number; filename: string; url: string }[];
+  fixer?: { name: string } | null;
+  reproContext?: { reproUrl: string | null; staleEnvRetest?: boolean; staleEnvRetestReason?: string | null };
 }
 
 export function DetailView({
   client,
   taskId,
   onBack,
+  onRecordDemo,
+  notice,
 }: {
   client: SprintQaClient;
   taskId: number;
   onBack: () => void;
+  /** Record the screen and attach it to this task; absent without a recorder. */
+  onRecordDemo?: () => void;
+  /** A line from the widget about this task, such as a demo uploading. */
+  notice?: React.ReactNode;
 }) {
   const theme = useTheme();
   const t = useStrings();
@@ -65,6 +76,8 @@ export function DetailView({
   const [notes, setNotes] = useState("");
   const [videoMsg, setVideoMsg] = useState<string | null>(null);
   const [videoBusy, setVideoBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [shown, setShown] = useState<number | null>(null);
 
   function load() {
     setData(null);
@@ -75,13 +88,18 @@ export function DetailView({
   }
   useEffect(load, [taskId]);
 
+  function statusOf(e: unknown): number {
+    return e instanceof SprintQaError ? e.status : 0;
+  }
+
   async function take() {
     setBusy(true);
+    setActionMsg(null);
     try {
       await client.take(taskId);
       load();
-    } catch {
-      setError(true);
+    } catch (e) {
+      setActionMsg(statusOf(e) === 409 ? t("taskChanged") : t("reviewStartFailed"));
     } finally {
       setBusy(false);
     }
@@ -89,11 +107,16 @@ export function DetailView({
 
   async function verify(verdict: "verified" | "bug_found") {
     setBusy(true);
+    setActionMsg(null);
     try {
       await client.verify(taskId, { verdict, notes: notes.trim() || undefined });
+      setNotes("");
       load();
-    } catch {
-      setError(true);
+    } catch (e) {
+      const status = statusOf(e);
+      setActionMsg(
+        status === 409 ? t("alreadyVerified") : status === 403 ? t("verifyForbidden") : status === 0 ? t("verdictOffline") : t("verdictFailed")
+      );
     } finally {
       setBusy(false);
     }
@@ -129,6 +152,11 @@ export function DetailView({
     );
   }
 
+  const gallery: LightboxItem[] = [
+    ...(data.screenshots ?? []).map((s) => ({ kind: "image" as const, url: s.url, name: s.filename })),
+    ...(data.demoVideos ?? []).filter((v) => v.url).map((v) => ({ kind: "video" as const, url: v.url!, name: v.filename })),
+  ];
+
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
       <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" style={styles.backHit}>
@@ -141,9 +169,28 @@ export function DetailView({
           {t("verifiedCount", { state: stateLabel(data.task.state, t), count: data.activeVerifiedCount })}
         </Text>
       </View>
+      {data.fixer ? <Text style={styles.meta}>{t("fixedBy", { name: data.fixer.name })}</Text> : null}
+      {data.reproContext?.staleEnvRetest ? (
+        <Text style={styles.stale}>{data.reproContext.staleEnvRetestReason || t("staleEnv")}</Text>
+      ) : null}
       {data.task.description ? (
         <Text style={styles.desc}>{data.task.description}</Text>
       ) : null}
+
+      {gallery.length > 0 && (
+        <View style={styles.audioWrap}>
+          <Text style={styles.audioHeading}>{t("screenshots")}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {gallery.map((g, i) =>
+              g.kind === "image" ? (
+                <Pressable key={g.url} onPress={() => setShown(i)} accessibilityRole="imagebutton" accessibilityLabel={g.name}>
+                  <Image source={{ uri: g.url }} style={styles.thumb} />
+                </Pressable>
+              ) : null
+            )}
+          </ScrollView>
+        </View>
+      )}
 
       {data.audioNotes && data.audioNotes.length > 0 && (
         <View style={styles.audioWrap}>
@@ -164,15 +211,25 @@ export function DetailView({
         </View>
       )}
 
-      {(videoAttachAvailable() ||
-        (data.demoVideos && data.demoVideos.length > 0)) && (
+      {(videoAttachAvailable() || onRecordDemo || (data.demoVideos && data.demoVideos.length > 0)) && (
         <View style={styles.audioWrap}>
           <Text style={styles.audioHeading}>{t("demoVideos")}</Text>
-          {data.demoVideos?.map((v) => (
-            <Text key={v.id} style={styles.videoRow} numberOfLines={1}>
-              {v.filename}
-            </Text>
-          ))}
+          {data.demoVideos?.map((v) => {
+            const i = gallery.findIndex((g) => g.kind === "video" && g.name === v.filename && g.url === v.url);
+            return (
+              <Pressable key={v.id} onPress={() => i >= 0 && setShown(i)} disabled={i < 0} accessibilityRole="button">
+                <Text style={[styles.videoRow, i >= 0 && styles.videoLink]} numberOfLines={1}>
+                  ▶ {v.filename}
+                </Text>
+              </Pressable>
+            );
+          })}
+          {onRecordDemo && (
+            <Pressable style={styles.audioBtn} onPress={onRecordDemo} accessibilityRole="button">
+              <Text style={styles.audioBtnText}>{t("recordDemo")}</Text>
+            </Pressable>
+          )}
+          {notice ? <Text style={styles.meta}>{notice}</Text> : null}
           {videoAttachAvailable() && (
             <Pressable
               style={[styles.audioBtn, videoBusy && { opacity: 0.5 }]}
@@ -198,6 +255,11 @@ export function DetailView({
         multiline
       />
 
+      {actionMsg ? (
+        <Text style={styles.videoMsg} accessibilityLiveRegion="polite">
+          {actionMsg}
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Pressable style={[styles.btn, styles.btnGhost]} onPress={take} disabled={busy} accessibilityRole="button">
           <Text style={styles.btnGhostText}>{t("take")}</Text>
@@ -219,6 +281,7 @@ export function DetailView({
           <Text style={styles.btnSignalText}>{t("verify")}</Text>
         </Pressable>
       </View>
+      <Lightbox items={gallery} index={shown} onIndex={setShown} onClose={() => setShown(null)} />
     </ScrollView>
   );
 }
@@ -240,11 +303,24 @@ function AudioNotePlayer({ url }: { url: string }) {
   useEffect(
     () => () => {
       void soundRef.current?.unloadAsync?.();
+      soundRef.current?.remove?.();
     },
     []
   );
 
   async function toggle() {
+    if (ExpoAudioModern) {
+      if (!soundRef.current) {
+        soundRef.current = ExpoAudioModern.createAudioPlayer(url);
+        soundRef.current.addListener?.("playbackStatusUpdate", (s: { playing?: boolean; didJustFinish?: boolean }) => {
+          setPlaying(!!s.playing && !s.didJustFinish);
+          if (s.didJustFinish) soundRef.current?.seekTo?.(0);
+        });
+      }
+      if (playing) soundRef.current.pause();
+      else soundRef.current.play();
+      return;
+    }
     if (!ExpoAudio) return;
     try {
       if (soundRef.current) {
@@ -276,7 +352,7 @@ function AudioNotePlayer({ url }: { url: string }) {
     }
   }
 
-  const disabled = !ExpoAudio;
+  const disabled = !ExpoAudio && !ExpoAudioModern;
   return (
     <Pressable
       style={[styles.audioBtn, disabled && { opacity: 0.5 }]}
@@ -327,7 +403,20 @@ function makeStyles(t: Theme) {
       justifyContent: "center" as const,
     },
     audioBtnText: { color: t.c.foreground, fontSize: 14, fontWeight: "500" as const },
-    videoRow: { color: t.c.foreground, fontSize: 14 },
+    videoRow: { color: t.c.foreground, fontSize: 14, minHeight: 32, textAlignVertical: "center" as const },
+    videoLink: { color: t.c.signal, fontWeight: "500" as const },
+    thumb: { width: 96, height: 160, borderRadius: t.radius.md, backgroundColor: t.c["bg-elev-2"] },
+    meta: { color: t.c["muted-foreground"], fontSize: 13, marginTop: 8 },
+    stale: {
+      color: t.c.warning,
+      backgroundColor: t.c["warning-soft"],
+      fontSize: 13,
+      lineHeight: 18,
+      padding: 10,
+      borderRadius: t.radius.md,
+      marginTop: 10,
+      overflow: "hidden" as const,
+    },
     videoMsg: { color: t.c.destructive, fontSize: 13 },
     input: {
       backgroundColor: t.c.input,

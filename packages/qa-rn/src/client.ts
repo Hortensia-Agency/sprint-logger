@@ -34,7 +34,7 @@ export class SprintQaError extends Error {
 }
 
 export class SprintQaClient {
-  private readonly origin: string;
+  readonly origin: string;
   private readonly widgetKey: string;
   private pat: string | null;
 
@@ -139,6 +139,14 @@ export class SprintQaClient {
     return this.uploadAttachment(taskId, file, "screenshot");
   }
 
+  /** The marked-up crop, shown first on the task. */
+  async uploadAnnotatedScreenshot(
+    taskId: number,
+    file: { uri: string; name: string; type: string }
+  ): Promise<AttachmentResponse> {
+    return this.uploadAttachment(taskId, file, "annotated_screenshot");
+  }
+
   /** Upload a recorded voice note (kind=audio_note) to the same route. */
   async uploadAudioNote(
     taskId: number,
@@ -181,6 +189,9 @@ export class SprintQaClient {
       filename: string;
       mimeType: string;
       durationSec?: number;
+      /** Seconds into the clip; the player clamps to them, nothing is re-encoded. */
+      trimStart?: number;
+      trimEnd?: number;
     }
   ): Promise<AttachmentResponse> {
     return this.json<AttachmentResponse>(
@@ -194,10 +205,70 @@ export class SprintQaClient {
     );
   }
 
+  /** A presigned PUT for a gzipped debug capture (console, network, actions). */
+  presignCapture(taskId: number, sizeBytes: number): Promise<PresignResponse> {
+    return this.json<PresignResponse>(
+      "/api/widget/captures/presign",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId, contentType: "application/gzip", sizeBytes: Math.max(1, sizeBytes) }),
+      },
+      true
+    );
+  }
+
+  /** Links an uploaded capture to the task and, when there is one, its video. */
+  recordCapture(body: {
+    taskId: number;
+    captureObjectKey: string;
+    videoAttachmentId?: number;
+    startedAtEpochMs: number;
+    durationMs: number;
+    eventCount: number;
+    telemetryCount: number;
+    truncated: boolean;
+  }): Promise<unknown> {
+    return this.json(
+      "/api/widget/captures",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      true
+    );
+  }
+
+  /** A presigned PUT for a project demo (the Demo tab), not tied to a task. */
+  presignDemo(file: { name: string; type: string; sizeBytes: number }): Promise<PresignResponse> {
+    return this.json<PresignResponse>(
+      "/api/widget/demos/presign",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, contentType: file.type, sizeBytes: file.sizeBytes }),
+      },
+      true
+    );
+  }
+
+  /** Publishes an uploaded demo to the project's library (born unpublished to clients). */
+  recordDemo(body: {
+    objectKey: string;
+    filename: string;
+    mimeType: string;
+    durationSec: number;
+    title: string;
+    description?: string;
+  }): Promise<unknown> {
+    return this.json(
+      "/api/widget/demos",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      true
+    );
+  }
+
   private uploadAttachment(
     taskId: number,
     file: { uri: string; name: string; type: string },
-    kind: "screenshot" | "audio_note"
+    kind: "screenshot" | "annotated_screenshot" | "audio_note"
   ): Promise<AttachmentResponse> {
     const form = new FormData();
     // RN's FormData accepts the { uri, name, type } shape for file parts.

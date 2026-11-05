@@ -3,8 +3,8 @@
  * expo-image-picker, then upload it browser-direct to storage via a presigned
  * PUT and record the attachment row.
  *
- * E7 — the PUT MUST stream from disk: FileSystem.uploadAsync with
- * BINARY_CONTENT. Never fetch(uri) + blob here — that materializes the whole
+ * E7: the PUT MUST stream from disk: FileSystem.uploadAsync with
+ * BINARY_CONTENT. Never fetch(uri) + blob here: that materializes the whole
  * clip (up to 150 MB) in the JS heap and OOM-crashes the host app.
  *
  * Both deps are OPTIONAL peers; absent either, videoAttachAvailable() is
@@ -12,7 +12,7 @@
  *
  * Known limitation (documented in the README): some Android OEM screen
  * recorders and iOS default to HEVC/H.265. The server accepts the container
- * mime, but desktop browsers may not play HEVC — testers should disable HEVC
+ * mime, but desktop browsers may not play HEVC, so testers should disable HEVC
  * ("Most compatible" on iOS) when a clip won't play back.
  */
 
@@ -42,7 +42,7 @@ function mimeFromUri(uri: string): string {
 
 /**
  * Open the OS library filtered to videos. Resolves null when the user
- * cancels or the picked clip is unusable (no file size / over the cap —
+ * cancels or the picked clip is unusable (no file size, or over the cap;
  * the returned `error` on the throw explains which).
  */
 export async function pickDemoVideo(): Promise<VideoPart | null> {
@@ -57,7 +57,7 @@ export async function pickDemoVideo(): Promise<VideoPart | null> {
   const sizeBytes: number = asset.fileSize ?? 0;
   if (sizeBytes > VIDEO_MAX_UPLOAD_BYTES) {
     throw new Error(
-      `Video is over the ${Math.round(VIDEO_MAX_UPLOAD_BYTES / 1024 / 1024)} MB cap — record a shorter clip.`
+      `Video is over the ${Math.round(VIDEO_MAX_UPLOAD_BYTES / 1024 / 1024)} MB cap. Record a shorter clip.`
     );
   }
   const type: string = asset.mimeType || mimeFromUri(asset.uri);
@@ -80,7 +80,8 @@ export async function pickDemoVideo(): Promise<VideoPart | null> {
 export async function uploadDemoVideo(
   client: SprintQaClient,
   taskId: number,
-  part: VideoPart
+  part: VideoPart,
+  trim?: { trimStart?: number; trimEnd?: number }
 ): Promise<{ id: number }> {
   if (!FileSystem) {
     throw new Error("Video upload needs the expo-file-system peer installed.");
@@ -95,20 +96,12 @@ export async function uploadDemoVideo(
   } catch (e) {
     throw new Error(
       e instanceof SprintQaError && e.status === 422
-        ? "Video rejected — over the size cap or your team's demo storage quota."
+        ? "Video rejected: it is over the size cap or your team's demo storage quota."
         : "Couldn't start the video upload."
     );
   }
 
-  // E7: BINARY_CONTENT streams the file from disk — zero JS-heap residency.
-  const put = await FileSystem.uploadAsync(presign.uploadUrl, part.uri, {
-    httpMethod: "PUT",
-    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-    headers: { "Content-Type": part.type },
-  });
-  if (!put || put.status < 200 || put.status >= 300) {
-    throw new Error("Video upload failed — check your connection and retry.");
-  }
+  await putFile(presign.uploadUrl, part.uri, part.type);
 
   const rec = await client
     .recordDemoVideo(taskId, {
@@ -116,9 +109,58 @@ export async function uploadDemoVideo(
       filename: part.name,
       mimeType: part.type,
       ...(part.durationSec ? { durationSec: part.durationSec } : {}),
+      ...(trim?.trimStart != null ? { trimStart: trim.trimStart } : {}),
+      ...(trim?.trimEnd != null ? { trimEnd: trim.trimEnd } : {}),
     })
     .catch(() => {
-      throw new Error("Upload finished but couldn't be saved — retry.");
+      throw new Error("Upload finished but couldn't be saved. Try again.");
     });
   return { id: rec.id };
+}
+
+/**
+ * PUT a file on disk to a presigned URL. E7: BINARY_CONTENT streams it, so a
+ * long clip never sits in the JS heap.
+ */
+export async function putFile(url: string, uri: string, type: string): Promise<void> {
+  if (!FileSystem) throw new Error("Uploads need the expo-file-system peer installed.");
+  const put = await FileSystem.uploadAsync(url, uri, {
+    httpMethod: "PUT",
+    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+    headers: { "Content-Type": type },
+  });
+  if (!put || put.status < 200 || put.status >= 300) {
+    throw new Error("The upload stopped. Check your connection and try again.");
+  }
+}
+
+/** Presign, PUT and publish a project demo from the Demo tab. */
+export async function uploadStandaloneDemo(
+  client: SprintQaClient,
+  part: VideoPart,
+  meta: { title: string; description?: string }
+): Promise<void> {
+  let presign;
+  try {
+    presign = await client.presignDemo({ name: part.name, type: part.type, sizeBytes: part.sizeBytes });
+  } catch (e) {
+    throw new Error(
+      e instanceof SprintQaError && e.status === 422
+        ? "Video rejected: it is over the size cap or your team's demo storage quota."
+        : "Couldn't start the upload."
+    );
+  }
+  await putFile(presign.uploadUrl, part.uri, part.type);
+  await client
+    .recordDemo({
+      objectKey: presign.objectKey,
+      filename: part.name,
+      mimeType: part.type,
+      durationSec: Math.max(1, Math.round(part.durationSec ?? 1)),
+      title: meta.title,
+      description: meta.description,
+    })
+    .catch(() => {
+      throw new Error("Uploaded, but the demo couldn't be published. Try again.");
+    });
 }

@@ -1,8 +1,8 @@
 /**
- * Optional native deps resolved at runtime. react-native-view-shot (screenshot)
- * and expo-av (voice notes) are OPTIONAL peers — hosts that don't want a given
- * capability skip installing them, and the widget degrades to
- * report-without-that-feature rather than crashing.
+ * Optional native deps resolved at runtime: react-native-view-shot
+ * (screenshots), expo-audio or expo-av (voice notes), expo-video, react-native-svg
+ * and the screen recorder. Hosts that don't want a capability skip installing
+ * it, and the widget leaves that feature out rather than crashing.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,3 +77,49 @@ export const FileSystem =
   _fileSystem && typeof _fileSystem.uploadAsync === "function"
     ? _fileSystem
     : null;
+
+// expo-audio records and plays voice notes on current Expo SDKs (expo-av is
+// deprecated there). Preferred over expo-av when both are installed.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _expoAudioModern: any = null;
+try {
+  _expoAudioModern = require("expo-audio");
+} catch {
+  _expoAudioModern = null;
+}
+export const ExpoAudioModern =
+  _expoAudioModern && typeof _expoAudioModern.useAudioRecorder === "function" ? _expoAudioModern : null;
+
+// expo-video plays a recorded bug video back on the review screen, so the
+// trim handles have a picture to follow. Absent: the trim track still works.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _expoVideo: any = null;
+try {
+  _expoVideo = require("expo-video");
+} catch {
+  _expoVideo = null;
+}
+export const ExpoVideo = _expoVideo && _expoVideo.VideoView ? _expoVideo : null;
+
+// react-native-svg draws annotations (screenshot markup, drawing while
+// recording). Absent: screenshots are sent without markup tools.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _svg: any = null;
+try {
+  _svg = require("react-native-svg");
+} catch {
+  _svg = null;
+}
+export const Svg = _svg && _svg.Svg ? _svg : null;
+
+// react-native-nitro-screen-recorder records the app's screen for "Record the
+// screen": in-app (ReplayKit) on iOS, MediaProjection on Android. Absent: the
+// control never appears and a video from the library is the fallback.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _screenRecorder: any = null;
+try {
+  _screenRecorder = require("react-native-nitro-screen-recorder");
+} catch {
+  _screenRecorder = null;
+}
+export const ScreenRecorder = _screenRecorder ?? null;

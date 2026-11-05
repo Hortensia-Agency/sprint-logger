@@ -85,6 +85,8 @@ export interface WidgetConfig {
   projectName: string;
   qaUrls: string[];
   signoffPolicy: SignoffPolicy;
+  /** Console and network capture alongside a recorded bug video. */
+  captureEnabled?: boolean;
   appearance?: WidgetAppearance;
   /** Why Sprint refused the `appearance` prop, when it did. */
   appearanceOverrideError?: string;
