@@ -19,6 +19,7 @@
  * `oauthDeps` prop; injected deps win over the SDK's own require.
  */
 
+import { AppState, Linking, Platform } from "react-native";
 import { WebBrowser as RequiredWebBrowser, ExpoCrypto as RequiredCrypto } from "./optional-deps";
 
 /** The two host-provided native modules the OAuth flow needs. */
@@ -78,6 +79,60 @@ function paramFromUrl(url: string, key: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+type SessionResult = { type: string; url?: string };
+
+/**
+ * How long a return to the app waits for the redirect before it counts as the
+ * person closing the browser.
+ */
+const REDIRECT_GRACE_MS = 1500;
+
+/**
+ * expo-web-browser's auth session, made safe on Android. There it races the
+ * redirect link against the app coming back to the foreground, and on some
+ * phones (Brave, several OEM browsers) the foreground wins: the session
+ * reports a dismissal, the verifier above is dropped, and the redirect that
+ * lands a moment later has nothing to finish it. Here a return to the app only
+ * counts as a dismissal when no redirect follows within a short grace.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function openAuthSession(wb: any, url: string, redirectUrl: string): Promise<SessionResult> {
+  if (Platform.OS !== "android" || typeof wb.openBrowserAsync !== "function") {
+    return wb.openAuthSessionAsync(url, redirectUrl);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    let left = false;
+    const finish = (r: SessionResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(grace);
+      link.remove();
+      app.remove();
+      try {
+        wb.dismissBrowser?.();
+      } catch {
+        // Already closed by the redirect.
+      }
+      resolve(r);
+    };
+    const link = Linking.addEventListener("url", (e: { url: string }) => {
+      if (e.url.startsWith(redirectUrl)) finish({ type: "success", url: e.url });
+    });
+    const app = AppState.addEventListener("change", (state) => {
+      if (state !== "active") {
+        left = true;
+        return;
+      }
+      if (!left) return;
+      clearTimeout(grace);
+      grace = setTimeout(() => finish({ type: "dismiss" }), REDIRECT_GRACE_MS);
+    });
+    Promise.resolve(wb.openBrowserAsync(url)).catch(() => finish({ type: "cancel" }));
+  });
+}
+
 export async function signInWithSprint(opts: {
   origin: string;
   widgetKey: string;
@@ -97,7 +152,7 @@ export async function signInWithSprint(opts: {
     `&device=${encodeURIComponent(opts.deviceId)}` +
     `&challenge=${encodeURIComponent(challenge)}`;
 
-  const result = await wb.openAuthSessionAsync(startUrl, opts.redirectUri);
+  const result = await openAuthSession(wb, startUrl, opts.redirectUri);
   if (result.type !== "success" || !result.url) {
     return { ok: false, error: result.type === "cancel" ? "cancelled" : "dismissed" };
   }

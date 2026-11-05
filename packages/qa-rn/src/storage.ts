@@ -1,7 +1,8 @@
 /**
- * Per-device persistence over AsyncStorage. Two things survive app restarts:
+ * Per-device persistence over AsyncStorage. These survive app restarts:
  *   - the pasted mobile_widget PAT (so the tester pastes once per device)
  *   - the movable FAB position (so it stays where the tester dragged it)
+ *   - whether the person hid the bubble (dragged onto Hide, or the host's switch)
  *
  * AsyncStorage is a peer dep so the host's single instance is shared. If it's
  * absent (misconfigured host) the calls degrade to in-memory for the session.
@@ -36,6 +37,20 @@ try {
 const PAT_KEY = "sprint-qa-pat";
 const FAB_POS_KEY = "sprint-qa-fab-pos";
 const DEVICE_ID_KEY = "sprint-qa-device-id";
+const RESUME_KEY = "sprint-qa-resume";
+const HIDDEN_KEY = "sprint-qa-hidden";
+
+/** The person's own choice to hide the bubble on this device. */
+export async function loadHidden(): Promise<boolean> {
+  try {
+    return (await store.getItem(HIDDEN_KEY)) === "1";
+  } catch {
+    return false;
+  }
+}
+export async function saveHidden(hidden: boolean): Promise<void> {
+  return hidden ? store.setItem(HIDDEN_KEY, "1") : store.removeItem(HIDDEN_KEY);
+}
 
 /**
  * A stable per-device id, generated once and persisted. Used to name per-device
@@ -79,4 +94,20 @@ export async function loadFabPos(): Promise<FabPos | null> {
 }
 export async function saveFabPos(pos: FabPos): Promise<void> {
   return store.setItem(FAB_POS_KEY, JSON.stringify(pos));
+}
+
+/**
+ * Set while a sign-in from the sheet is out in the browser. Coming back can
+ * rebuild the host's screen (Android may recreate the activity), which resets
+ * the widget closed; the next mount reads this and reopens the sheet.
+ */
+export async function markResume(): Promise<void> {
+  return store.setItem(RESUME_KEY, String(Date.now()));
+}
+/** True once, within ten minutes of markResume. */
+export async function takeResume(): Promise<boolean> {
+  const raw = await store.getItem(RESUME_KEY);
+  if (!raw) return false;
+  await store.removeItem(RESUME_KEY);
+  return Date.now() - Number(raw) < 10 * 60 * 1000;
 }

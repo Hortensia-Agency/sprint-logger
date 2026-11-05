@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-nativ
 import { useTheme, useThemedStyles, type Theme } from "./theme";
 import { useStrings, type StringKey } from "./strings";
 import { isPatShape, resolveOrigin } from "../config";
-import { getDeviceId } from "../storage";
+import { getDeviceId, markResume, takeResume } from "../storage";
 import { isOAuthAvailable, signInWithSprint, type OAuthDeps } from "../oauth";
 
 /**
@@ -42,6 +42,7 @@ export function PatGate({
     setError(null);
     try {
       const device = await getDeviceId();
+      await markResume();
       const res = await signInWithSprint({
         origin: resolveOrigin({ widgetKey, host: "", pat: null, origin }),
         widgetKey,
@@ -49,6 +50,7 @@ export function PatGate({
         deviceId: device,
         deps: oauthDeps,
       });
+      if (!res.ok) await takeResume();
       if (res.ok) {
         onSubmit(res.token);
       } else if (res.error !== "cancelled" && res.error !== "dismissed") {
