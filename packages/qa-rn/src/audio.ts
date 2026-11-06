@@ -1,10 +1,12 @@
 /**
- * Voice-note recording via expo-av — the RN counterpart to the web SDK's
- * MediaRecorder capture. Tester-initiated only.
+ * The expo-av voice-note recorder, for apps on Expo SDKs that still ship it.
+ * With expo-audio installed the widget records and plays voice notes itself
+ * and never uses this; expo-audio wins when both are present. Tester-initiated
+ * only.
  *
- * expo-av is an OPTIONAL peer: when it isn't installed, makeAudioRecorder
- * returns null and the ReportView hides the "Record voice note" control, so
- * the report flow proceeds without audio rather than crashing.
+ * expo-av is an OPTIONAL peer: when neither it nor expo-audio is installed,
+ * the review screen hides the "Record a voice note" control, so the report
+ * flow proceeds without audio rather than crashing.
  *
  * PRIVACY: a voice note is visible to everyone on the project's QA roster
  * (same tenant), the same as a screenshot. Recording is opt-in per report.

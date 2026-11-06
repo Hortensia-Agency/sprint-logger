@@ -15,11 +15,19 @@ pnpm add @sprint-logger/qa-rn
 # peer deps (most Expo apps already have the first three):
 pnpm add react-native-gesture-handler react-native-reanimated \
   @react-native-async-storage/async-storage
-# optional, only if you want screenshot capture:
-pnpm add react-native-view-shot
-# optional, only if you want demo-video attach (OS-recorder clips):
-pnpm add expo-image-picker expo-file-system
+# optional, each one turns a feature on (the widget hides what's missing):
+pnpm add react-native-view-shot              # screenshots
+pnpm add react-native-svg                    # marking up screenshots, drawing while recording
+pnpm add expo-audio                          # voice notes: recording and playback
+pnpm add react-native-nitro-screen-recorder  # recording the screen
+pnpm add expo-video                          # playing a recording back to trim it
+pnpm add expo-image-picker expo-file-system  # picking a photo or video, uploading videos
+pnpm add expo-web-browser expo-crypto        # Sign in with Sprint
 ```
+
+Voice notes use `expo-audio`. Apps on older Expo SDKs that only have the
+deprecated `expo-av` still get recording and playback through it; when both
+are installed, `expo-audio` is used.
 
 Mount once near the app root, inside a `GestureHandlerRootView`.
 

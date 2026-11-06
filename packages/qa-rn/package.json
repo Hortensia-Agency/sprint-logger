@@ -47,34 +47,50 @@
   },
   "peerDependencies": {
     "@react-native-async-storage/async-storage": ">=1.21.0",
+    "expo-audio": ">=0.3.0",
     "expo-av": ">=13.0.0",
     "expo-crypto": ">=13.0.0",
     "expo-file-system": ">=16.0.0",
     "expo-image-picker": ">=14.0.0",
+    "expo-video": ">=1.0.0",
     "expo-web-browser": ">=13.0.0",
     "react": ">=18",
     "react-native": ">=0.73",
     "react-native-gesture-handler": ">=2.0.0",
+    "react-native-nitro-screen-recorder": "*",
     "react-native-reanimated": ">=3.0.0",
+    "react-native-svg": ">=13.0.0",
     "react-native-view-shot": ">=3.0.0"
   },
   "peerDependenciesMeta": {
-    "react-native-view-shot": {
+    "expo-audio": {
       "optional": true
     },
     "expo-av": {
       "optional": true
     },
-    "expo-web-browser": {
+    "expo-crypto": {
       "optional": true
     },
-    "expo-crypto": {
+    "expo-file-system": {
       "optional": true
     },
     "expo-image-picker": {
       "optional": true
     },
-    "expo-file-system": {
+    "expo-video": {
+      "optional": true
+    },
+    "expo-web-browser": {
+      "optional": true
+    },
+    "react-native-nitro-screen-recorder": {
+      "optional": true
+    },
+    "react-native-svg": {
+      "optional": true
+    },
+    "react-native-view-shot": {
       "optional": true
     }
   },
