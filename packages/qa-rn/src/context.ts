@@ -11,7 +11,8 @@
  *      report time so the route is current, not stale-from-mount.
  *
  * The result maps onto the EXISTING server contract (POST /api/widget/report):
- * route → reproUrl, viewport/userAgent/extra → autoContext. No server change.
+ * route, viewport, userAgent and extra → autoContext. A route is a screen
+ * name, not a URL, so it never goes in reproUrl (http(s) only).
  */
 
 import { Dimensions, Platform } from "react-native";
@@ -19,7 +20,7 @@ import type { CaptureProfile, ReportInput } from "./contract";
 
 /** What the host can hand the widget at report time. All fields optional. */
 export interface HostContext {
-  /** Current screen/route, e.g. "Checkout/Payment". Becomes the task reproUrl. */
+  /** Current screen/route, e.g. "Checkout/Payment". Sent as autoContext.route. */
   route?: string;
   /** Arbitrary key/values folded into the auto-captured context comment. */
   extra?: Record<string, string | number | boolean>;
@@ -53,8 +54,8 @@ export function buildContext(
     : undefined;
   return {
     ...base,
-    reproUrl: host?.route,
     autoContext: {
+      ...(host?.route ? { route: host.route } : {}),
       viewport: nativeViewport(),
       userAgent: nativeUserAgent(),
       ...(extra && extra.length ? { consoleErrors: extra } : {}),

@@ -129,6 +129,8 @@ export interface ReportInput {
   autoContext?: {
     viewport?: { w: number; h: number };
     userAgent?: string;
+    /** The screen the app was on; servers older than this field ignore it. */
+    route?: string;
     consoleErrors?: string[];
   };
 }
