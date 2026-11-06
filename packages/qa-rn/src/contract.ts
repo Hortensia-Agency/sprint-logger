@@ -39,7 +39,7 @@ export interface WidgetAppearance {
   /** The bubble takes the accent instead of ink. Absent on older servers. */
   bubbleAccent?: boolean;
   logoUrl: string | null;
-  bubble: { icon: "bug" | "chat" | "help" | "logo"; size: number; side: "right" | "left"; label: string | null };
+  bubble: { icon: "report" | "bug" | "chat" | "help" | "logo"; size: number; side: "right" | "left"; label: string | null };
   /** Paths on the web; on native, matched against the `route` prop. */
   hiddenRoutes: string[];
   copy: { title: string | null; intro: string | null; submit: string | null; thanks: string | null };
@@ -68,7 +68,7 @@ export interface AppearanceOverride {
   radius?: "sharp" | "medium" | "round";
   showLogo?: boolean;
   bubble?: {
-    icon?: "bug" | "chat" | "help" | "logo";
+    icon?: "report" | "bug" | "chat" | "help" | "logo";
     size?: "sm" | "md" | "lg";
     side?: "right" | "left";
     label?: string | null;

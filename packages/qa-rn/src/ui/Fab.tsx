@@ -37,13 +37,13 @@ const HIDE_SIZE = 56; // the Hide target's circle
 const HIDE_GAP = 28; // from the bottom safe edge to the circle
 const HIDE_PULL = 64; // bubble center within this of the target's: it's pulled in
 
-export type BubbleIcon = "bug" | "chat" | "help" | "logo";
+export type BubbleIcon = "report" | "bug" | "chat" | "help" | "logo";
 
 export function Fab({
   onPress,
   size = 48,
   side = "right",
-  icon = "bug",
+  icon = "report",
   logoUrl,
   label,
   accessibilityLabel,
@@ -277,8 +277,10 @@ export function Fab({
               <ChatGlyph color={glyph} size={size} />
             ) : icon === "help" ? (
               <Text style={[styles.help, { color: glyph, fontSize: size * 0.42 }]}>?</Text>
-            ) : (
+            ) : icon === "bug" ? (
               <BugGlyph color={glyph} />
+            ) : (
+              <ReportGlyph color={glyph} size={size} />
             )}
           </View>
         </Animated.View>
@@ -322,6 +324,29 @@ function ChatGlyph({ color, size }: { color: string; size: number }) {
           transform: [{ skewY: "-30deg" }],
         }}
       />
+    </View>
+  );
+}
+
+/** A round speech bubble with "!", the default: "report a problem". */
+function ReportGlyph({ color, size }: { color: string; size: number }) {
+  const w = size * 0.44;
+  return (
+    <View style={{ width: w, height: w, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderRadius: w / 2,
+          borderBottomLeftRadius: w * 0.12,
+          borderWidth: 2,
+          borderColor: color,
+        }}
+      />
+      <Text style={{ color, fontSize: w * 0.5, fontWeight: "800", lineHeight: w * 0.6 }}>!</Text>
     </View>
   );
 }
